@@ -7,19 +7,24 @@ requires-python = ">=3.11,<3.13"  # Python 3.13 not yet supported for some deps
 dependencies = [
     "accelerate>=1.5.2",
     "alpaca-eval",
+    # Need to explicitly specify datasets version since earlier versions run into this issue
+    # https://discuss.huggingface.co/t/loading-a-dataset-cached-in-a-localfilesystem-is-not-supported/158365/2
+    "datasets>=4.0.0",
     "flash-attn==2.7.4.post1",
     "jupyter>=1.1.1",
     "math-verify[antlr4-13-2]>=0.7.0",
     "pylatexenc==2.10",
     "notebook>=7.4.2",
     "pytest>=8.3.5",
-    "torch",
+    "torch~=2.9.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torch~=2.9.0; sys_platform == 'darwin' and platform_machine == 'x86_64'", # Intel Macs
     "tqdm>=4.67.1",
     "transformers>=4.50.0",
     "typer>=0.15.4",
-    "vllm==0.7.2",
+    "vllm==0.11.2",
     "wandb>=0.19.8",
     "xopen>=2.0.2",
+    "datasets>=2.14.4",
 ]
 
 [tool.setuptools.packages.find]
