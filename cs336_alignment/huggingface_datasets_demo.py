@@ -56,8 +56,8 @@ def demo_tulu3():
 def main():
     """Runs a simple Hugging Face datasets demo."""
     # demo_countdown()
-    # demo_gsm8k()
-    demo_tulu3()
+    demo_gsm8k()
+    # demo_tulu3()
 
 
 if __name__ == "__main__":
