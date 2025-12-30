@@ -36,11 +36,11 @@ def tokenize_prompt_and_output(
         all_response_masks.append(
             torch.tensor(
                 [
-                    False,
+                    0,
                 ]
                 * len(encoded_sequence["input_ids"])
                 + [
-                    True,
+                    1,
                 ]
                 * len(encoded_sequence["labels"])
             )
@@ -54,9 +54,9 @@ def tokenize_prompt_and_output(
     all_response_masks = torch.nn.utils.rnn.pad_sequence(
         sequences=all_response_masks,
         batch_first=True,
-        padding_value=False,
+        padding_value=0,
         padding_side="right",
-    ).to(torch.bool)
+    ).to(torch.int8)
     return {
         "input_ids": all_sequences[:, :-1],
         "labels": all_sequences[:, 1:],
