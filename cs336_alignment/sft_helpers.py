@@ -1,7 +1,11 @@
 """Helpers for SFT and RL."""
 
+import einops
 import torch
+import torch.nn.functional as F
 import transformers
+
+from jaxtyping import Float
 
 
 def tokenize_prompt_and_output(
@@ -58,3 +62,14 @@ def tokenize_prompt_and_output(
         "labels": all_sequences[:, 1:],
         "response_mask": all_response_masks[:, 1:],
     }
+
+
+def compute_entropy(
+    logits: Float[torch.Tensor, "batch_size seq_len vocab_size"],
+) -> Float[torch.Tensor, "batch_size seq_len"]:
+    """Computes the per-token entropy."""
+    return -einops.einsum(
+        logits,
+        F.softmax(logits, dim=-1),
+        "B T V, B T V -> B T",
+    ) + torch.logsumexp(logits, dim=-1)

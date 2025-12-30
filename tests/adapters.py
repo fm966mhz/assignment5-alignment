@@ -33,11 +33,7 @@ def run_tokenize_prompt_and_output(
             "response_mask": torch.Tensor of shape (batch_size, max(prompt_and_output_lens) - 1):
                 a mask on the response tokens in `labels`.
     """
-    return sft_helpers.tokenize_prompt_and_output(
-        prompt_strs=prompt_strs,
-        output_strs=output_strs,
-        tokenizer=tokenizer,
-    )
+    raise NotImplementedError
 
 
 def run_compute_group_normalized_rewards(
@@ -88,7 +84,7 @@ def run_compute_group_normalized_rewards(
 
 def run_compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     """Get the entropy of the logits (i.e., entropy of the final dimension)."""
-    raise NotImplementedError
+    return sft_helpers.compute_entropy(logits=logits)
 
 
 def run_get_response_log_probs(
