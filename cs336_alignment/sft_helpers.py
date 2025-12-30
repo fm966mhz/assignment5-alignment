@@ -106,3 +106,23 @@ def get_response_log_probs(
     if return_toek_entropy:
         output["token_entropy"] = compute_entropy(logits=logits)
     return output
+
+
+def masked_normalize(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    normalize_constant: float,
+    dim: int | None = None,
+) -> torch.Tensor:
+    """Runs masked normalize on tensor."""
+    return (
+        torch.sum(
+            torch.where(
+                mask == 1,
+                tensor,
+                0.0,
+            ),
+            dim=dim,
+        )
+        / normalize_constant
+    )

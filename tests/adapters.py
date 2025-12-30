@@ -280,7 +280,9 @@ def run_masked_normalize(
         torch.Tensor, the normalized sum, where masked elements
             (mask=0) don't contribute to the sum.
     """
-    raise NotImplementedError
+    return sft_helpers.masked_normalize(
+        tensor=tensor, mask=mask, dim=dim, normalize_constant=normalize_constant
+    )
 
 
 """
