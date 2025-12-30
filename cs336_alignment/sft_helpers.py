@@ -126,3 +126,28 @@ def masked_normalize(
         )
         / normalize_constant
     )
+
+
+def sft_microbatch_train_step(
+    policy_log_probs: Float[torch.Tensor, "batch_size seq_len"],
+    response_mask: Int[torch.Tensor, "batch_size seq_len"],
+    gradient_accumulation_steps: int,
+    normalize_constant: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Runs one microbatch step in SFT training.
+
+    `loss.backward()` is called.
+    """
+    loss = (
+        torch.mean(
+            masked_normalize(
+                tensor=-policy_log_probs,
+                mask=response_mask,
+                normalize_constant=normalize_constant,
+                dim=-1,
+            )
+        )
+        / gradient_accumulation_steps
+    )
+    loss.backward()
+    return (loss, {})
