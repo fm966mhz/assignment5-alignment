@@ -4,6 +4,8 @@ import os
 from typing import Any, Callable, Literal
 
 import torch
+import transformers
+
 from torch import Tensor
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
@@ -88,11 +90,11 @@ def run_compute_entropy(logits: torch.Tensor) -> torch.Tensor:
 
 
 def run_get_response_log_probs(
-    model: torch.nn.Module,
+    model: transformers.PreTrainedModel,
     input_ids: torch.Tensor,
     labels: torch.Tensor,
     return_token_entropy: bool,
-) -> torch.Tensor:
+) -> dict[str, torch.Tensor]:
     """Get the conditional log-probs of the response given the prompt,
         and optionally the entropy of the next token predictions.
 
@@ -116,7 +118,12 @@ def run_get_response_log_probs(
                 we have not masked out the token indices corresponding to the prompt
                 or padding; that is done in the train loop.
     """
-    raise NotImplementedError
+    return sft_helpers.get_response_log_probs(
+        model=model,
+        input_ids=input_ids,
+        labels=labels,
+        return_toek_entropy=return_token_entropy,
+    )
 
 
 def run_compute_naive_policy_gradient_loss(

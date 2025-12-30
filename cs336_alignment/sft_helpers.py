@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 import transformers
 
-from jaxtyping import Float
+from jaxtyping import Float, Int
 
 
 def tokenize_prompt_and_output(
@@ -68,8 +68,41 @@ def compute_entropy(
     logits: Float[torch.Tensor, "batch_size seq_len vocab_size"],
 ) -> Float[torch.Tensor, "batch_size seq_len"]:
     """Computes the per-token entropy."""
-    return -einops.einsum(
+    return torch.logsumexp(logits, dim=-1) - einops.einsum(
         logits,
         F.softmax(logits, dim=-1),
         "B T V, B T V -> B T",
-    ) + torch.logsumexp(logits, dim=-1)
+    )
+
+
+def get_response_log_probs(
+    model: transformers.PreTrainedModel,
+    input_ids: Int[torch.Tensor, "batch_size seq_len"],
+    labels: Int[torch.Tensor, "batch_size seq_len"],
+    return_toek_entropy: bool = False,
+) -> dict[str, Float[torch.Tensor, "batch_size seq_len"]]:
+    """Gets the log probabilities of the response tokens.
+
+    Args:
+        model: The language model.
+        input_ids: Input IDs tensor of shape (batch_size, seq_len).
+        labels: Labels tensor of shape (batch_size, seq_len).
+        return_token_entropy: Whether to return per-token entropy.
+
+    Returns:
+        A dictionary with 'log_probs' and optionally 'token_entropy'.
+    """
+    assert (
+        input_ids.shape == labels.shape
+    ), f"Input ids shape {input_ids.shape} different from labels shape {labels.shape}."
+    logits: Float[torch.Tensor, "batch_size seq_len vocab_size"] = model(input_ids)[
+        "logits"
+    ]
+    log_probs = F.log_softmax(logits, dim=-1)
+    log_probs = torch.gather(log_probs, dim=-1, index=labels.unsqueeze(dim=-1)).squeeze(
+        dim=-1
+    )
+    output = {"log_probs": log_probs}
+    if return_toek_entropy:
+        output["token_entropy"] = compute_entropy(logits=logits)
+    return output
