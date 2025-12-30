@@ -17,7 +17,7 @@ def extract_gsm8k_ground_truth_answer(output: str) -> float:
     parts = output.strip().split("####")
     if len(parts) < 2:
         raise ValueError("Output does not contain expected '####' delimiter.")
-    answer_part = parts[1].strip()
+    answer_part = parts[1].strip().replace(",", "")
     try:
         answer = float(answer_part)
     except ValueError as e:
@@ -95,7 +95,12 @@ def validate_countdown_answer(output: str, nums: list[int], target: int) -> bool
         bool: True if the answer is correct, False otherwise.
     """
     if "=" in output:
-        expr, answer_part = output.split("=")
+        output_parts = output.split("=")
+        if len(output_parts) < 2:
+            return False
+        # For expressions like `99 - 11 + 4 = 88 + 4 = 92`, only consider the first expression and
+        # the last number.
+        expr, answer_part = output_parts[0], output_parts[-1]
         answer_part = answer_part.strip()
         try:
             answer = int(answer_part)
