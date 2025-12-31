@@ -89,7 +89,7 @@ def evaluate_on_countdown(
     nums_list: list[list[int]],
     target_list: list[int],
     eval_sampling_params: vllm.SamplingParams,
-):
+) -> EvalResult:
     """Evaluates the model on Countdown dataset using the provided reward function.
 
     Args:
