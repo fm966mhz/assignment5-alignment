@@ -5,7 +5,7 @@ import regex as re
 from cs336_alignment import drgrpo_grader
 
 
-def extract_gsm8k_ground_truth_answer(output: str) -> float:
+def extract_gsm8k_ground_truth_answer(gt_answer: str) -> float:
     """Extracts answers from GSM8K model output.
 
     Args:
@@ -14,10 +14,10 @@ def extract_gsm8k_ground_truth_answer(output: str) -> float:
     Returns:
         float: The extracted answer as a float.
     """
-    parts = output.strip().split("####")
+    parts = gt_answer.strip().split("####")
     if len(parts) < 2:
         raise ValueError("Output does not contain expected '####' delimiter.")
-    answer_part = parts[1].strip().replace(",", "")
+    answer_part = parts[-1].strip().replace(",", "")
     try:
         answer = float(answer_part)
     except ValueError as e:

@@ -27,7 +27,7 @@ def generate_gsm8k_prompt_collate(
     }
 
 
-def generate_gsmk8k_prompt_from_question_list(
+def generate_gsm8k_prompt_from_question_list(
     prompt_template: str, questions: list[str]
 ) -> list[str]:
     """Generates GSM8K prompts from a list of questions.
@@ -46,6 +46,23 @@ def generate_gsmk8k_prompt_from_question_list(
         )
         prompts.append(prompt)
     return prompts
+
+
+def format_gsm8k_answer(gsm8k_answers: list[str]) -> list[str]:
+    """Formats GSM8k answers to the one matching `prompts/my_system_prompt.prompt`."""
+    output = []
+    for gt_answer in gsm8k_answers:
+        parts = gt_answer.strip().split("####")
+        if len(parts) < 2:
+            raise ValueError(f"Invalid GSM8K answer: {gt_answer}")
+        answer_part = parts[-1].strip().replace(",", "")
+        try:
+            answer = float(answer_part)
+        except ValueError as e:
+            raise ValueError(f"Invalid GSM8K answer: {gt_answer}") from e
+        reasoning_part = "####".join(parts[:-1])
+        output.append(f"{reasoning_part} </think> <answer> {answer} </answer>")
+    return output
 
 
 def generate_countdown_prompt_collate(

@@ -124,7 +124,7 @@ def run_get_response_log_probs(
         model=model,
         input_ids=input_ids,
         labels=labels,
-        return_toek_entropy=return_token_entropy,
+        return_token_entropy=return_token_entropy,
     )
 
 

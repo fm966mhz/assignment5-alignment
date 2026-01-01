@@ -91,7 +91,7 @@ def get_response_log_probs(
     model: transformers.PreTrainedModel,
     input_ids: Int[torch.Tensor, "batch_size seq_len"],
     labels: Int[torch.Tensor, "batch_size seq_len"],
-    return_toek_entropy: bool = False,
+    return_token_entropy: bool = False,
 ) -> dict[str, Float[torch.Tensor, "batch_size seq_len"]]:
     """Gets the log probabilities of the response tokens.
 
@@ -115,7 +115,7 @@ def get_response_log_probs(
         dim=-1
     )
     output = {"log_probs": log_probs}
-    if return_toek_entropy:
+    if return_token_entropy:
         output["token_entropy"] = compute_entropy(logits=logits)
     return output
 
@@ -168,6 +168,7 @@ def sft_microbatch_train_step(
 def stack_logits(
     model_output_logits: tuple[Float[torch.Tensor, "batch_size vocab_size"]],
 ) -> Float[torch.Tensor, "batch_size seq_len vocab_size"]:
+    """Stacks logits."""
     output = torch.stack(model_output_logits, dim=1)
     return output
 

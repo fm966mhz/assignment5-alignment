@@ -92,7 +92,7 @@ def run_gsm8k_evaluation(
     eval_result = eval_utils.evaluate_on_gsm8k(
         vllm_model=vllm_model,
         reward_fn=custom_grader.gsm8k_reward_fn,
-        model_inputs=data_utils.generate_gsmk8k_prompt_from_question_list(
+        model_inputs=data_utils.generate_gsm8k_prompt_from_question_list(
             prompt_template=system_prompt,
             questions=gsm8k_ds["question"],
         ),
