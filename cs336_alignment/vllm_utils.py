@@ -51,5 +51,9 @@ def load_policy_into_vllm_instance(
         vllm_instance: The vLLM instance to load the policy into.
     """
     state_dict = policy.state_dict()
+    # Remove the _orig_mod. prefix from the state dict keys, which is added by torch.compile.
+    state_dict = {
+        name.replace("_orig_mod.", ""): value for name, value in state_dict.items()
+    }
     llm_model = vllm_instance.llm_engine.model_executor.driver_worker.model_runner.model
     llm_model.load_weights(state_dict.items())

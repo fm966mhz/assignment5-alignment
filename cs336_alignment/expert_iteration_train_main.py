@@ -64,6 +64,11 @@ _num_validation_examples = flags.DEFINE_integer(
     -1,
     "The number of validation examples to use for validation. If -1, use all validation examples.",
 )
+_max_model_response_length = flags.DEFINE_integer(
+    "max_model_response_length",
+    512,
+    "The maximum length of the model response to use for training.",
+)
 _sample_batch_size = flags.DEFINE_integer(
     "sample_batch_size",
     128,
@@ -126,10 +131,12 @@ def _get_base_model(
         dtype=torch.bfloat16,
     )
     model = model.to(device)  # pyright: ignore[reportArgumentType]
+    # Compile makes training much slower. So don't do it.
+    # model = torch.compile(model)
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         _model_id.value,
     )
-    return model, tokenizer
+    return model, tokenizer  # pyright: ignore[reportReturnType]
 
 
 def _get_dataloader() -> tuple[torch.utils.data.DataLoader, torch.utils.data.Dataset]:
@@ -201,25 +208,24 @@ def main(argv):
         raise app.UsageError("Too many command-line arguments.")
 
     _check_at_least_two_gpus()
+    # The following makes training much slower, but may be necessary for high precision.
+    # torch.set_float32_matmul_precision("high")
 
     train_dataloader, validation_ds = _get_dataloader()
     prompt_template = _load_prompt_template(_prompt_template_path.value)
 
     policy_model, tokenizer = _get_base_model(device="cuda:0")
-    optimizer = _get_optimizer(
-        policy_model=policy_model,
-        learning_rate=_learning_rate.value,
-    )
     vllm_model = vllm_utils.init_vllm(
         model_id=_model_id.value,
         device="cuda:1",
         seed=_seed.value,
         gpu_memory_utilization=0.85,
     )
+    # Set a reasonable max model response length to avoid OOM during training.
     training_sampling_params = vllm.SamplingParams(
         temperature=1.0,
         top_p=1.0,
-        max_tokens=1024,
+        max_tokens=_max_model_response_length.value,
         min_tokens=4,
         n=_num_rollouts.value,
         stop=["</answer>"],
@@ -228,7 +234,7 @@ def main(argv):
     eval_sampling_params = vllm.SamplingParams(
         temperature=1.0,
         top_p=1.0,
-        max_tokens=1024,
+        max_tokens=_max_model_response_length.value,
         min_tokens=4,
         n=1,
         stop=["</answer>"],
@@ -303,6 +309,10 @@ def main(argv):
             f"Sampling expert rollouts for expert iteration {expert_iteration} from "
             f"{len(input_prompts)} input prompts and {_num_rollouts.value} rollouts per prompt..."
         )
+        vllm_utils.load_policy_into_vllm_instance(
+            policy=policy_model,
+            vllm_instance=vllm_model,
+        )
         selected_prompts, correct_model_responses = sft_helpers.sample_expert_rollouts(
             model=vllm_model,
             sampling_params=training_sampling_params,
@@ -315,7 +325,6 @@ def main(argv):
                 f"No expert rollouts found for expert iteration {expert_iteration}."
             )
             continue
-        expert_iteration += 1
         sft_ds = datasets.Dataset.from_dict(
             {
                 "input_prompts": selected_prompts,
@@ -327,12 +336,38 @@ def main(argv):
             batch_size=_training_batch_size.value,
             shuffle=True,
         )
+        num_microbatches_used = 0
+        optimizer = _get_optimizer(
+            policy_model=policy_model,
+            learning_rate=_learning_rate.value,
+        )
+        num_training_steps = (
+            len(selected_prompts)
+            * _num_epochs.value
+            // (_training_batch_size.value * _gradient_accumulation_steps.value)
+        )
+        warmup_iters = num_training_steps // 10
+        lr_scheduler = sft_helpers.CosineLrScheduler(
+            optimizer=optimizer,
+            max_learning_rate=_learning_rate.value,
+            min_learning_rate=_learning_rate.value * 0.1,
+            warmup_iters=warmup_iters,
+            cosine_cycle_iters=num_training_steps - warmup_iters,
+        )
+        optimizer.zero_grad()
         logging.info(
             f"Starting expert iteration {expert_iteration} training with {len(selected_prompts)} "
-            "correct model responses..."
+            f"correct model responses. Total training steps: {num_training_steps}..."
         )
-        num_microbatches_used = 0
-        grad_unused = False
+        logging.info(
+            f"Sample selected prompts and correct model responses: {[
+                (selected_prompt, correct_model_response)
+                for selected_prompt, correct_model_response in zip(
+                    selected_prompts[:10], correct_model_responses[:10]
+                )
+                ]
+            }"
+        )
         for epoch in range(_num_epochs.value):
             for batch in tqdm.tqdm(
                 sft_ds_loader,
@@ -359,7 +394,6 @@ def main(argv):
                     response_mask=response_mask,
                     gradient_accumulation_steps=_gradient_accumulation_steps.value,
                 )
-                grad_unused = True
                 average_token_entropy = sft_helpers.masked_normalize(
                     tensor=policy_log_probs_and_entropy["token_entropy"],
                     mask=response_mask,
@@ -372,9 +406,17 @@ def main(argv):
                         {
                             "train_step": global_train_step,
                             "train/loss": loss.detach().item(),
+                            "train/max_correct_model_response_length": tokenized_input_dict[
+                                "response_mask"
+                            ]
+                            .sum(dim=-1)
+                            .max()
+                            .detach()
+                            .item(),
                             "train/average_token_entropy": average_token_entropy.mean()
                             .detach()
                             .item(),
+                            "train/learning_rate": optimizer.param_groups[0]["lr"],
                             "train/selected_prompt_model_response_sample": wandb.Table(
                                 columns=["input_prompt", "correct_model_response"],
                                 data=[
@@ -394,8 +436,8 @@ def main(argv):
                         parameters=policy_model.parameters(),
                         max_norm=_gradient_clip.value,
                     )
-                    grad_unused = False
                     optimizer.step()
+                    lr_scheduler.step()
                     optimizer.zero_grad()
                     global_train_step += 1
                 del (
@@ -405,45 +447,40 @@ def main(argv):
                     loss,
                     average_token_entropy,
                 )
-
-        if grad_unused:
-            optimizer.step()
-            optimizer.zero_grad()
-        logging.info(
-            f"Finished expert iteration {expert_iteration} training. Running evals..."
-        )
-        vllm_utils.load_policy_into_vllm_instance(
-            policy=policy_model,
-            vllm_instance=vllm_model,
-        )
-        eval_result = eval_utils.evaluate_on_gsm8k(
-            vllm_model=vllm_model,
-            reward_fn=custom_grader.gsm8k_reward_fn,
-            model_inputs=data_utils.generate_gsm8k_prompt_from_question_list(
-                prompt_template=prompt_template,
-                questions=validation_ds["question"],
-            ),
-            ground_truth_answers=validation_ds["answer"],
-            eval_sampling_params=eval_sampling_params,
-        )
-        wandb_run.log(
-            {
-                "eval_step": expert_iteration,
-                "eval/gsm8k_score": eval_result.score,
-                "eval/prompt_gt_correct_sample": eval_utils.get_sample_eval_result_table(
-                    eval_result=eval_result,
-                    max_num_samples=10,
-                    correct_samples=True,
-                    incorrect_samples=False,
+            # Run evals every epoch.
+            vllm_utils.load_policy_into_vllm_instance(
+                policy=policy_model,
+                vllm_instance=vllm_model,
+            )
+            eval_result = eval_utils.evaluate_on_gsm8k(
+                vllm_model=vllm_model,
+                reward_fn=custom_grader.gsm8k_reward_fn,
+                model_inputs=data_utils.generate_gsm8k_prompt_from_question_list(
+                    prompt_template=prompt_template,
+                    questions=validation_ds["question"],
                 ),
-                "eval/prompt_gt_incorrect_sample": eval_utils.get_sample_eval_result_table(
-                    eval_result=eval_result,
-                    max_num_samples=10,
-                    correct_samples=False,
-                    incorrect_samples=True,
-                ),
-            }
-        )
+                ground_truth_answers=validation_ds["answer"],
+                eval_sampling_params=eval_sampling_params,
+            )
+            wandb_run.log(
+                {
+                    "eval_step": expert_iteration * _num_epochs.value + epoch + 1,
+                    "eval/gsm8k_score": eval_result.score,
+                    "eval/prompt_gt_correct_sample": eval_utils.get_sample_eval_result_table(
+                        eval_result=eval_result,
+                        max_num_samples=10,
+                        correct_samples=True,
+                        incorrect_samples=False,
+                    ),
+                    "eval/prompt_gt_incorrect_sample": eval_utils.get_sample_eval_result_table(
+                        eval_result=eval_result,
+                        max_num_samples=10,
+                        correct_samples=False,
+                        incorrect_samples=True,
+                    ),
+                }
+            )
+        expert_iteration += 1
         if expert_iteration % _checkpoint_every_n_expert_iterations.value == 0:
             logging.info(
                 f"Saving policy model and tokenizer for expert iteration {expert_iteration}..."

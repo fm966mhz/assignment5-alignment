@@ -2,6 +2,7 @@
 
 import dataclasses
 import itertools
+import math
 
 from typing import Callable
 
@@ -12,6 +13,7 @@ import transformers
 import vllm
 
 from jaxtyping import Float, Int
+from torch import optim
 
 
 def tokenize_prompt_and_output(
@@ -117,7 +119,10 @@ def get_response_log_probs(
     )
     output = {"log_probs": log_probs}
     if return_token_entropy:
-        output["token_entropy"] = compute_entropy(logits=logits)
+        # Save memory by not saving intermediate tensor for entropy, which is not used in the
+        # backward pass.
+        with torch.no_grad():
+            output["token_entropy"] = compute_entropy(logits=logits)
     return output
 
 
@@ -353,3 +358,76 @@ def sample_expert_rollouts(
                 selected_prompts.append(model_response.prompt)
                 correct_model_responses.append(rollout.text)
     return selected_prompts, correct_model_responses
+
+
+def get_cosine_lr(
+    it: int,
+    max_learning_rate: float,
+    min_learning_rate: float,
+    warmup_iters: int,
+    cosine_cycle_iters: int,
+):
+    """
+    Given the parameters of a cosine learning rate decay schedule (with linear
+    warmup) and an iteration number, return the learning rate at the given
+    iteration under the specified schedule.
+
+    Args:
+        it (int): Iteration number to get learning rate for.
+        max_learning_rate (float): alpha_max, the maximum learning rate for
+            cosine learning rate schedule (with warmup).
+        min_learning_rate (float): alpha_min, the minimum / final learning rate for
+            the cosine learning rate schedule (with warmup).
+        warmup_iters (int): T_w, the number of iterations to linearly warm-up
+            the learning rate.
+        cosine_cycle_iters (int): T_c, the number of cosine annealing iterations.
+
+    Returns:
+        Learning rate at the given iteration under the specified schedule.
+    """
+    if it < warmup_iters:
+        return it / warmup_iters * max_learning_rate
+    if it <= cosine_cycle_iters:
+        return (
+            0.5
+            * (
+                1
+                + math.cos(
+                    (it - warmup_iters) / (cosine_cycle_iters - warmup_iters) * math.pi
+                )
+            )
+            * (max_learning_rate - min_learning_rate)
+            + min_learning_rate
+        )
+    return min_learning_rate
+
+
+class CosineLrScheduler(optim.lr_scheduler.LRScheduler):
+    """The cosine LR scheduler."""
+
+    def __init__(
+        self,
+        optimizer: optim.Optimizer,
+        max_learning_rate: float,
+        min_learning_rate: float,
+        warmup_iters: int,
+        cosine_cycle_iters: int,
+        last_epoch: int = -1,
+    ):
+        self.max_learning_rate = max_learning_rate
+        self.min_learning_rate = min_learning_rate
+        self.warmup_iters = warmup_iters
+        self.cosine_cycle_iters = cosine_cycle_iters
+        super().__init__(optimizer=optimizer, last_epoch=last_epoch)
+
+    def get_lr(self) -> list[float]:
+        return [
+            get_cosine_lr(
+                it=self.last_epoch,
+                max_learning_rate=self.max_learning_rate,
+                min_learning_rate=self.min_learning_rate,
+                warmup_iters=self.warmup_iters,
+                cosine_cycle_iters=self.cosine_cycle_iters,
+            )
+            for _ in self.optimizer.param_groups
+        ]
