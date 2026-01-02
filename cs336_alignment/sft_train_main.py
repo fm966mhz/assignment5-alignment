@@ -1,7 +1,5 @@
 """Main script for SFT training."""
 
-import json
-
 from typing import Any
 
 import datasets
@@ -96,11 +94,6 @@ _gradient_clip = flags.DEFINE_float(
     1.0,
     "The gradient clip to use for training.",
 )
-_log_training_data_every_n_updates = flags.DEFINE_integer(
-    "log_training_data_every_n_updates",
-    5,
-    "The number of updates to use for logging training data.",
-)
 
 
 def _check_at_least_two_gpus() -> None:
@@ -184,41 +177,6 @@ def _get_optimizer(
     return torch.optim.AdamW(
         policy_model.parameters(),
         lr=learning_rate,
-    )
-
-
-def _get_sample_eval_result_table(
-    eval_result: eval_utils.EvalResult,
-    max_num_samples: int,
-    correct_samples: bool,
-    incorrect_samples: bool,
-) -> wandb.Table:
-    """Gets the sample evaluation result table."""
-    output_data = []
-    for row in eval_result.rows:
-        if row.rewards.get("answer_reward", 0.0) == 1.0 and correct_samples:
-            output_data.append(
-                [
-                    row.input_prompt,
-                    row.generated_output,
-                    row.ground_truth_answer,
-                    json.dumps(row.rewards),
-                ]
-            )
-        elif row.rewards.get("answer_reward", 0.0) == 0.0 and incorrect_samples:
-            output_data.append(
-                [
-                    row.input_prompt,
-                    row.generated_output,
-                    row.ground_truth_answer,
-                    json.dumps(row.rewards),
-                ]
-            )
-        if len(output_data) >= max_num_samples:
-            break
-    return wandb.Table(
-        columns=["input_prompt", "generated_output", "ground_truth_answer", "reward"],
-        data=output_data,
     )
 
 
@@ -362,9 +320,6 @@ def main(argv):
                 % (_validate_every_n_updates.value * _gradient_accumulation_steps.value)
                 == 0
             ):
-                output_dir = f"{_output_dir.value}/policy_model_checkpoint_{num_microbatches_used}"
-                policy_model.save_pretrained(output_dir)
-                tokenizer.save_pretrained(output_dir)
                 vllm_utils.load_policy_into_vllm_instance(
                     policy=policy_model,
                     vllm_instance=vllm_model,
@@ -381,15 +336,16 @@ def main(argv):
                 )
                 wandb_run.log(
                     {
-                        "eval_step": num_microbatches_used,
+                        "eval_step": num_microbatches_used
+                        // _gradient_accumulation_steps.value,
                         "eval/gsm8k_score": eval_result.score,
-                        "eval/prompt_gt_correct_sample": _get_sample_eval_result_table(
+                        "eval/prompt_gt_correct_sample": eval_utils.get_sample_eval_result_table(
                             eval_result=eval_result,
                             max_num_samples=10,
                             correct_samples=True,
                             incorrect_samples=False,
                         ),
-                        "eval/prompt_gt_incorrect_sample": _get_sample_eval_result_table(
+                        "eval/prompt_gt_incorrect_sample": eval_utils.get_sample_eval_result_table(
                             eval_result=eval_result,
                             max_num_samples=10,
                             correct_samples=False,
@@ -407,6 +363,12 @@ def main(argv):
                 loss,
                 average_token_entropy,
             )
+
+        logging.info(f"Epoch {epoch} completed. Saving policy model and tokenizer...")
+        output_dir = f"{_output_dir.value}/policy_model_checkpoint_{epoch}"
+        policy_model.save_pretrained(output_dir)
+        tokenizer.save_pretrained(output_dir)
+        logging.info(f"Policy model and tokenizer saved successfully to {output_dir}.")
 
 
 if __name__ == "__main__":

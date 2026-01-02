@@ -1,6 +1,7 @@
 """Utilities for vLLM."""
 
-import torch
+import os
+
 import transformers
 import vllm
 
@@ -22,6 +23,8 @@ def init_vllm(
         gpu_memory_utilization: The GPU memory utilization to use for the model.
     """
     vllm.model_executor.set_random_seed(seed)
+    # This is very much a hack, and only seems to work for vLLM 0.7.2.
+    # This requires PyTorch version 2.5.1, which doesn't work with my Laptop GPU 5080.
     world_size_patch = patch("torch.distributed.get_world_size", return_value=1)
     profiling_patch = patch(
         "vllm.worker.worker.Worker._assert_memory_footprint_increased_during_profiling",
@@ -50,4 +53,3 @@ def load_policy_into_vllm_instance(
     state_dict = policy.state_dict()
     llm_model = vllm_instance.llm_engine.model_executor.driver_worker.model_runner.model
     llm_model.load_weights(state_dict.items())
-

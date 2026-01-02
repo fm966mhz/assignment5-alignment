@@ -1,10 +1,12 @@
 """Eval utilities for RLVR."""
 
 import dataclasses
+import json
 
 from typing import Callable
 
 import vllm
+import wandb
 
 from absl import logging
 
@@ -132,4 +134,39 @@ def evaluate_on_countdown(
     return EvalResult(
         rows=eval_rows,
         score=correct_count / len(eval_rows) if eval_rows else 0.0,
+    )
+
+
+def get_sample_eval_result_table(
+    eval_result: EvalResult,
+    max_num_samples: int,
+    correct_samples: bool,
+    incorrect_samples: bool,
+) -> wandb.Table:
+    """Gets the sample evaluation result table."""
+    output_data = []
+    for row in eval_result.rows:
+        if row.rewards.get("answer_reward", 0.0) == 1.0 and correct_samples:
+            output_data.append(
+                [
+                    row.input_prompt,
+                    row.generated_output,
+                    row.ground_truth_answer,
+                    json.dumps(row.rewards),
+                ]
+            )
+        elif row.rewards.get("answer_reward", 0.0) == 0.0 and incorrect_samples:
+            output_data.append(
+                [
+                    row.input_prompt,
+                    row.generated_output,
+                    row.ground_truth_answer,
+                    json.dumps(row.rewards),
+                ]
+            )
+        if len(output_data) >= max_num_samples:
+            break
+    return wandb.Table(
+        columns=["input_prompt", "generated_output", "ground_truth_answer", "reward"],
+        data=output_data,
     )

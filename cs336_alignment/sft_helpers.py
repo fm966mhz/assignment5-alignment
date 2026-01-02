@@ -3,12 +3,13 @@
 import dataclasses
 import itertools
 
-from typing import Any, Callable
+from typing import Callable
 
 import einops
 import torch
 import torch.nn.functional as F
 import transformers
+import vllm
 
 from jaxtyping import Float, Int
 
@@ -316,3 +317,39 @@ def generate_model_log(
             )
         )
     return output
+
+
+def sample_expert_rollouts(
+    model: vllm.LLM,
+    sampling_params: vllm.SamplingParams,
+    input_prompts: list[str],
+    ground_truth_answers: list[str],
+    reward_fn: Callable[[str, str], dict[str, float]],
+) -> tuple[list[str], list[str]]:
+    """Samples expert rollouts.
+
+    Args:
+        model: The language model.
+        sampling_params: The sampling parameters.
+        input_prompts: The input prompts.
+        ground_truth_answers: The ground truth answers. This is from the dataset directly before any
+            formatting.
+        reward_fn: The reward function.
+
+    Returns:
+        A tuple of lists of selected prompts and correct model responses.
+    """
+    selected_prompts, correct_model_responses = [], []
+    model_responses = model.generate(
+        input_prompts,
+        sampling_params,
+    )
+    for model_response, ground_truth_answer in zip(
+        model_responses, ground_truth_answers
+    ):
+        for rollout in model_response.outputs:
+            reward = reward_fn(rollout.text, ground_truth_answer)
+            if reward["reward"] == 1.0:
+                selected_prompts.append(model_response.prompt)
+                correct_model_responses.append(rollout.text)
+    return selected_prompts, correct_model_responses
