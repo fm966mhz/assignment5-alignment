@@ -10,6 +10,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
 
+from cs336_alignment import grpo_utils
 from cs336_alignment import sft_helpers
 
 
@@ -47,7 +48,7 @@ def run_compute_group_normalized_rewards(
     group_size: int,
     advantage_eps: float,
     normalize_by_std: bool,
-) -> tuple[torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
     """
     Compute rewards for each group of rollout responses,
     normalized by the group size.
@@ -83,7 +84,14 @@ def run_compute_group_normalized_rewards(
                 You may choose what you wish to log here
                 (some statistics of the rewards, etc.).
     """
-    raise NotImplementedError
+    return grpo_utils.compute_group_normalized_rewards(
+        reward_fn=reward_fn,
+        rollout_responses=rollout_responses,
+        repeated_ground_truths=repeated_ground_truths,
+        group_size=group_size,
+        advantage_eps=advantage_eps,
+        normalize_by_std=normalize_by_std,
+    )
 
 
 def run_compute_entropy(logits: torch.Tensor) -> torch.Tensor:
@@ -144,7 +152,10 @@ def run_compute_naive_policy_gradient_loss(
         torch.Tensor of shape (batch_size, sequence_length):
             the policy gradient per-token loss.
     """
-    raise NotImplementedError
+    return grpo_utils.compute_naive_policy_gradient_loss(
+        raw_rewards_or_advantages=raw_rewards_or_advantages,
+        policy_log_probs=policy_log_probs
+    )
 
 
 def run_compute_grpo_clip_loss(
