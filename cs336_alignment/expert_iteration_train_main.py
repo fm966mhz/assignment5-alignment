@@ -69,11 +69,6 @@ _max_model_response_length = flags.DEFINE_integer(
     512,
     "The maximum length of the model response to use for training.",
 )
-_sample_batch_size = flags.DEFINE_integer(
-    "sample_batch_size",
-    128,
-    "The batch size to use for sampling.",
-)
 _num_rollouts = flags.DEFINE_integer(
     "num_rollouts",
     16,
@@ -139,11 +134,11 @@ def _get_base_model(
     return model, tokenizer  # pyright: ignore[reportReturnType]
 
 
-def _get_dataloader() -> tuple[torch.utils.data.DataLoader, torch.utils.data.Dataset]:
+def _get_datasets() -> tuple[datasets.Dataset, datasets.Dataset]:
     """Gets the training and validation datasets.
 
     Returns:
-        A tuple of the training data loader and validation datasets.
+        A tuple of the training and validation datasets.
     """
     gsm8k_ds = datasets.load_dataset(
         "openai/gsm8k",
@@ -154,15 +149,10 @@ def _get_dataloader() -> tuple[torch.utils.data.DataLoader, torch.utils.data.Dat
     train_ds = split_dataset_dict["train"]
     if _num_training_examples.value > 0:
         train_ds = train_ds.select(range(_num_training_examples.value))
-    train_dataloader = torch.utils.data.DataLoader(
-        train_ds.with_format("torch"),  # type: ignore[reportArgumentType]
-        batch_size=_sample_batch_size.value,
-        shuffle=True,
-    )
     validation_ds = split_dataset_dict["test"]
     if _num_validation_examples.value > 0:
         validation_ds = validation_ds.select(range(_num_validation_examples.value))
-    return train_dataloader, validation_ds  # type: ignore[reportReturnValueType]
+    return train_ds, validation_ds
 
 
 def _load_prompt_template(prompt_template_path: str) -> str:
@@ -211,7 +201,7 @@ def main(argv):
     # The following makes training much slower, but may be necessary for high precision.
     # torch.set_float32_matmul_precision("high")
 
-    train_dataloader, validation_ds = _get_dataloader()
+    train_ds, validation_ds = _get_datasets()
     prompt_template = _load_prompt_template(_prompt_template_path.value)
 
     policy_model, tokenizer = _get_base_model(device="cuda:0")
@@ -248,7 +238,6 @@ def main(argv):
             "model_id": _model_id.value,
             "learning_rate": _learning_rate.value,
             "num_training_examples": _num_training_examples.value,
-            "sample_batch_size": _sample_batch_size.value,
             "num_rollouts": _num_rollouts.value,
             "training_batch_size": _training_batch_size.value,
             "num_epochs": _num_epochs.value,
@@ -295,12 +284,9 @@ def main(argv):
         }
     )
     global_train_step = 0
-    expert_iteration = 0
-    for sample_input_prompts in train_dataloader:
-        if expert_iteration >= _num_expert_iterations.value:
-            break
+    for expert_iteration in range(_num_expert_iterations.value):
         logging.info(f"Starting expert iteration {expert_iteration}...")
-        input_questions = sample_input_prompts["question"]
+        input_questions = train_ds["question"]
         input_prompts = data_utils.generate_gsm8k_prompt_from_question_list(
             prompt_template=prompt_template,
             questions=input_questions,
@@ -317,7 +303,7 @@ def main(argv):
             model=vllm_model,
             sampling_params=training_sampling_params,
             input_prompts=input_prompts,
-            ground_truth_answers=sample_input_prompts["answer"],
+            ground_truth_answers=train_ds["answer"],
             reward_fn=custom_grader.gsm8k_reward_fn,
         )
         if len(selected_prompts) == 0:
@@ -480,7 +466,6 @@ def main(argv):
                     ),
                 }
             )
-        expert_iteration += 1
         if expert_iteration % _checkpoint_every_n_expert_iterations.value == 0:
             logging.info(
                 f"Saving policy model and tokenizer for expert iteration {expert_iteration}..."
