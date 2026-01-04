@@ -27,9 +27,9 @@ def compute_group_normalized_rewards(  # pylint: disable=too-many-arguments
     advantage_eps: float,
     normalize_by_std: bool,
 ) -> tuple[
-    Float[torch.Tensor, "rollout_batch_size"],
-    Float[torch.Tensor, "rollout_batch_size"],
-    dict[str, Any],
+    Float[torch.Tensor, "rollout_batch_size 1"],
+    Float[torch.Tensor, "rollout_batch_size 1"],
+    dict[str, Float[torch.Tensor, "rollout_batch_size 1"]],
 ]:
     """Computes group-normalized rewards for a batch of rollout responses.
 
@@ -91,11 +91,11 @@ def compute_group_normalized_rewards(  # pylint: disable=too-many-arguments
             torch.std(all_raw_rewards, dim=-1, keepdim=True) + advantage_eps
         )
     return (
-        group_normalized_rewards.flatten(),
-        all_raw_rewards.flatten(),
+        group_normalized_rewards.reshape(-1, 1),
+        all_raw_rewards.reshape(-1, 1),
         {
-            "format_rewards": all_format_rewards,
-            "answer_rewards": all_answer_rewards,
+            "format_rewards": all_format_rewards.reshape(-1, 1),
+            "answer_rewards": all_answer_rewards.reshape(-1, 1),
         },
     )
 
@@ -116,6 +116,18 @@ def compute_naive_policy_gradient_loss(
         torch.Tensor of shape (rollout_batch_size, sequence_length):
             the naive policy gradient loss.
     """
+    assert len(raw_rewards_or_advantages.shape) == len(policy_log_probs.shape), (
+        f"Raw rewards or advantages shape {raw_rewards_or_advantages.shape} doesn't match "
+        f"policy log probs shape {policy_log_probs.shape}"
+    )
+    assert raw_rewards_or_advantages.shape[0] == policy_log_probs.shape[0], (
+        f"Raw rewards or advantages length {raw_rewards_or_advantages.shape[0]} doesn't match "
+        f"policy log probs length {policy_log_probs.shape[0]}"
+    )
+    assert raw_rewards_or_advantages.shape[1] == 1, (
+        f"Raw rewards or advantages shape {raw_rewards_or_advantages.shape} doesn't have "
+        f"shape (rollout_batch_size, 1)"
+    )
     return -raw_rewards_or_advantages * policy_log_probs
 
 
@@ -337,7 +349,7 @@ def sample_grpo_rollouts(
     )
 
 
-def _get_microbatch_and_move_to_device(
+def get_microbatch_and_move_to_device(
     input_tensor: torch.Tensor,
     microbatch_idx: int,
     microbatch_size: int,
@@ -377,51 +389,51 @@ def grpo_train_one_epoch(
     for microbatch_idx in tqdm.tqdm(
         range(train_config.n_microbatches_per_rollout_batch),
         desc=(
-            f"Training microbatches in epoch {epoch}/{train_config.epochs_per_rollout_batch} of "
-            f"GRPO step {grpo_step}/{train_config.n_grpo_steps}"
+            f"Training microbatches in GRPO step {grpo_step}/{train_config.n_grpo_steps} "
+            f"epoch {epoch}/{train_config.epochs_per_rollout_batch}"
         ),
     ):
-        microbatch_input_ids = _get_microbatch_and_move_to_device(
+        microbatch_input_ids = get_microbatch_and_move_to_device(
             input_tensor=all_input_ids,
             microbatch_idx=microbatch_idx,
             microbatch_size=train_config.microbatch_size,
             device="cuda:0",
         )
-        microbatch_labels = _get_microbatch_and_move_to_device(
+        microbatch_labels = get_microbatch_and_move_to_device(
             input_tensor=all_labels,
             microbatch_idx=microbatch_idx,
             microbatch_size=train_config.microbatch_size,
             device="cuda:0",
         )
-        microbatch_response_mask = _get_microbatch_and_move_to_device(
+        microbatch_response_mask = get_microbatch_and_move_to_device(
             input_tensor=all_response_mask,
             microbatch_idx=microbatch_idx,
             microbatch_size=train_config.microbatch_size,
             device="cuda:0",
         )
-        microbatch_old_log_probs = _get_microbatch_and_move_to_device(
+        microbatch_old_log_probs = get_microbatch_and_move_to_device(
             input_tensor=all_old_log_probs,
             microbatch_idx=microbatch_idx,
             microbatch_size=train_config.microbatch_size,
             device="cuda:0",
         )
-        microbatch_raw_rewards = _get_microbatch_and_move_to_device(
+        microbatch_raw_rewards = get_microbatch_and_move_to_device(
             input_tensor=all_raw_rewards,
             microbatch_idx=microbatch_idx,
             microbatch_size=train_config.microbatch_size,
             device="cuda:0",
         )
-        microbatch_format_rewards = _get_microbatch_and_move_to_device(
+        microbatch_format_rewards = get_microbatch_and_move_to_device(
             input_tensor=all_format_rewards,
             microbatch_idx=microbatch_idx,
             microbatch_size=train_config.microbatch_size,
         )
-        microbatch_answer_rewards = _get_microbatch_and_move_to_device(
+        microbatch_answer_rewards = get_microbatch_and_move_to_device(
             input_tensor=all_answer_rewards,
             microbatch_idx=microbatch_idx,
             microbatch_size=train_config.microbatch_size,
         )
-        microbatch_advantages = _get_microbatch_and_move_to_device(
+        microbatch_advantages = get_microbatch_and_move_to_device(
             input_tensor=all_advantages,
             microbatch_idx=microbatch_idx,
             microbatch_size=train_config.microbatch_size,
@@ -434,7 +446,7 @@ def grpo_train_one_epoch(
             return_token_entropy=True,
         )
         loss, metadata = grpo_microbatch_train_step(
-            policy_log_probs=policy_log_probs_dict["logits"],
+            policy_log_probs=policy_log_probs_dict["log_probs"],
             response_mask=microbatch_response_mask,
             gradient_accumulation_steps=train_config.gradient_accumulation_steps,
             loss_type=train_config.loss_type,
@@ -444,14 +456,11 @@ def grpo_train_one_epoch(
             cliprange=train_config.cliprange,
         )
 
-        gradient_norm_before_clipping = None
-        if (microbatch_idx + 1) % train_config.gradient_accumulation_steps == 0:
+        if microbatch_idx % train_config.log_training_metrics_every_n_microbatches == 0:
             gradient_norm_before_clipping = torch.nn.utils.clip_grad_norm_(
                 parameters=policy_model.parameters(),
                 max_norm=train_config.gradient_clip,
             )
-            optimizer.step()
-            optimizer.zero_grad()
             log_dict = {
                 "train/loss": loss.detach().item(),
                 "train/average_token_entropy": masked_mean(
@@ -461,6 +470,7 @@ def grpo_train_one_epoch(
                 .detach()
                 .item(),
                 "train/average_response_length": microbatch_response_mask.sum(dim=-1)
+                .to(torch.float32)
                 .mean()
                 .detach()
                 .item(),
@@ -482,6 +492,15 @@ def grpo_train_one_epoch(
                     .item()
                 )
             wandb_run.log(log_dict)
+
+        if (microbatch_idx + 1) % train_config.gradient_accumulation_steps == 0:
+            torch.nn.utils.clip_grad_norm_(
+                parameters=policy_model.parameters(),
+                max_norm=train_config.gradient_clip,
+            )
+            optimizer.step()
+            optimizer.zero_grad()
+
         del (
             microbatch_input_ids,
             microbatch_labels,

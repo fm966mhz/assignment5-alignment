@@ -23,7 +23,8 @@ SAMPLING_MAX_TOKENS=1024
 SAMPLING_MIN_TOKENS=4
 SAMPLING_STOP="</answer>"
 EPOCHS_PER_ROLLOUT_BATCH=1
-TRAINING_BATCH_SIZE=256
+TRAIN_BATCH_SIZE=256
+INFERENCE_MICROBATCH_SIZE=32
 GRADIENT_ACCUMULATION_STEPS=128
 GPU_MEMORY_UTILIZATION=0.85
 LOSS_TYPE="reinforce_with_baseline"
@@ -34,6 +35,7 @@ ADAMW_BETA_2=0.95
 GRADIENT_CLIP=1.0
 CLIPRANGE=0.2
 VALIDATION_EVERY_N_UPDATES=1
+LOG_TRAINING_METRICS_EVERY_N_MICROBATCHES=10
 
 
 uv run cs336_alignment/grpo_train_main.py \
@@ -55,7 +57,8 @@ uv run cs336_alignment/grpo_train_main.py \
     --sampling_min_tokens="$SAMPLING_MIN_TOKENS" \
     --sampling_stop="$SAMPLING_STOP" \
     --epochs_per_rollout_batch="$EPOCHS_PER_ROLLOUT_BATCH" \
-    --training_batch_size="$TRAINING_BATCH_SIZE" \
+    --train_batch_size="$TRAIN_BATCH_SIZE" \
+    --inference_microbatch_size="$INFERENCE_MICROBATCH_SIZE" \
     --gradient_accumulation_steps="$GRADIENT_ACCUMULATION_STEPS" \
     --gpu_memory_utilization="$GPU_MEMORY_UTILIZATION" \
     --loss_type="$LOSS_TYPE" \
@@ -65,4 +68,5 @@ uv run cs336_alignment/grpo_train_main.py \
     --adamw_beta_2="$ADAMW_BETA_2" \
     --gradient_clip="$GRADIENT_CLIP" \
     --cliprange="$CLIPRANGE" \
-    --validation_every_n_updates="$VALIDATION_EVERY_N_UPDATES"
+    --validation_every_n_updates="$VALIDATION_EVERY_N_UPDATES" \
+    --log_training_metrics_every_n_microbatches="$LOG_TRAINING_METRICS_EVERY_N_MICROBATCHES"

@@ -61,6 +61,12 @@ _train_batch_size = flags.DEFINE_integer(
     256,
     "The effective batch size to use for training.",
 )
+_inference_microbatch_size = flags.DEFINE_integer(
+    "inference_microbatch_size",
+    64,
+    "The microbatch size to use for inference. This is mostly for getting the old log "
+    "probabilities.",
+)
 _gradient_accumulation_steps = flags.DEFINE_integer(
     "gradient_accumulation_steps",
     128,
@@ -112,6 +118,11 @@ _validation_every_n_updates = flags.DEFINE_integer(
     5,
     "Run validation every n updates/steps to the policy model.",
 )
+_log_training_metrics_every_n_microbatches = flags.DEFINE_integer(
+    "log_training_metrics_every_n_microbatches",
+    10,
+    "Log training metrics every n microbatches.",
+)
 
 
 @dataclass
@@ -129,6 +140,8 @@ class GrpoTrainConfig:  # pylint: disable=too-many-instance-attributes
     sampling_min_tokens: int
     sampling_stop: list[str]
     epochs_per_rollout_batch: int
+    train_batch_size: int
+    inference_microbatch_size: int
     gradient_accumulation_steps: int
     gpu_memory_utilization: float
     loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"]
@@ -139,15 +152,18 @@ class GrpoTrainConfig:  # pylint: disable=too-many-instance-attributes
     gradient_clip: float
     cliprange: float
     validation_every_n_updates: int
+    log_training_metrics_every_n_microbatches: int
     n_microbatches_per_rollout_batch: int
+    n_inference_microbatches_per_rollout_batch: int
     microbatch_size: int
 
 
 def get_grpo_train_config() -> GrpoTrainConfig:
     """Gets the GRPO training configuration."""
-    assert (
-        _train_batch_size.value % _gradient_accumulation_steps.value == 0
-    ), f"Train batch size {_train_batch_size.value} must be divisible by gradient accumulation steps {_gradient_accumulation_steps.value}"
+    assert _train_batch_size.value % _gradient_accumulation_steps.value == 0, (
+        f"Train batch size {_train_batch_size.value} must be divisible by gradient accumulation "
+        f"steps {_gradient_accumulation_steps.value}"
+    )
     assert (
         _rollout_batch_size.value % _group_size.value == 0
     ), f"Rollout batch size {_rollout_batch_size.value} must be divisible by group size {_group_size.value}"
@@ -161,6 +177,13 @@ def get_grpo_train_config() -> GrpoTrainConfig:
         f"{micro_batch_size}"
     )
     n_microbatches_per_rollout_batch = _rollout_batch_size.value // micro_batch_size
+    assert _rollout_batch_size.value % _inference_microbatch_size.value == 0, (
+        f"Rollout batch size {_rollout_batch_size.value} must be divisible by inference microbatch size "
+        f"{_inference_microbatch_size.value}"
+    )
+    n_inference_microbatches_per_rollout_batch = (
+        _rollout_batch_size.value // _inference_microbatch_size.value
+    )
     return GrpoTrainConfig(
         n_grpo_steps=n_grpo_steps.value,
         learning_rate=_learning_rate.value,
@@ -173,6 +196,8 @@ def get_grpo_train_config() -> GrpoTrainConfig:
         sampling_min_tokens=_sampling_min_tokens.value,
         sampling_stop=_sampling_stop.value,
         epochs_per_rollout_batch=_epochs_per_rollout_batch.value,
+        train_batch_size=_train_batch_size.value,
+        inference_microbatch_size=_inference_microbatch_size.value,
         gradient_accumulation_steps=_gradient_accumulation_steps.value,
         gpu_memory_utilization=_gpu_memory_utilization.value,
         loss_type=cast(
@@ -186,6 +211,8 @@ def get_grpo_train_config() -> GrpoTrainConfig:
         gradient_clip=_gradient_clip.value,
         cliprange=_cliprange.value,
         validation_every_n_updates=_validation_every_n_updates.value,
+        log_training_metrics_every_n_microbatches=_log_training_metrics_every_n_microbatches.value,
         n_microbatches_per_rollout_batch=n_microbatches_per_rollout_batch,
+        n_inference_microbatches_per_rollout_batch=n_inference_microbatches_per_rollout_batch,
         microbatch_size=micro_batch_size,
     )

@@ -7,6 +7,7 @@ from typing import Any
 import datasets
 import numpy as np
 import torch
+import tqdm
 import transformers
 import vllm
 import wandb
@@ -104,7 +105,7 @@ def _get_vllm_model_and_sampling_params(
         top_p=train_config.top_p,
         max_tokens=train_config.sampling_max_tokens,
         min_tokens=train_config.sampling_min_tokens,
-        n=train_config.rollout_batch_size,
+        n=train_config.group_size,
         stop=train_config.sampling_stop,
         include_stop_str_in_output=True,
     )
@@ -172,6 +173,41 @@ def _randomly_sample_batch(
     return ds.select(
         np.random.choice(range(len(ds)), size=num_datapoints, replace=False)
     )
+
+
+def _get_old_log_probs(
+    policy_model: transformers.PreTrainedModel,
+    tokenized_input_dict: dict[str, torch.Tensor],
+    train_config: grpo_train_config.GrpoTrainConfig,
+) -> torch.Tensor:
+    """Gets the old log probabilities for the tokenized input dictionary."""
+    output = []
+    for microbatch_idx in tqdm.tqdm(
+        range(train_config.n_inference_microbatches_per_rollout_batch),
+        desc="Getting old log probabilities",
+    ):
+        microbatch_input_ids = grpo_utils.get_microbatch_and_move_to_device(
+            input_tensor=tokenized_input_dict["input_ids"],
+            microbatch_idx=microbatch_idx,
+            microbatch_size=train_config.inference_microbatch_size,
+            device="cuda:0",
+        )
+        microbatch_labels = grpo_utils.get_microbatch_and_move_to_device(
+            input_tensor=tokenized_input_dict["labels"],
+            microbatch_idx=microbatch_idx,
+            microbatch_size=train_config.inference_microbatch_size,
+            device="cuda:0",
+        )
+        with torch.inference_mode():
+            old_log_probs = sft_helpers.get_response_log_probs(
+                model=policy_model,
+                input_ids=microbatch_input_ids,
+                labels=microbatch_labels,
+                return_token_entropy=False,
+            )["log_probs"]
+            old_log_probs = old_log_probs.to(device="cpu")
+            output.append(old_log_probs)
+    return torch.cat(output, dim=0)
 
 
 def _init_wandb_run(
@@ -261,6 +297,11 @@ def main(argv):
                 policy=policy_model,
                 vllm_instance=vllm_old_model,
             )
+        logging.info(
+            f"Sampling {train_config.rollout_batch_size} rollouts from "
+            f"{len(train_ds_batch)} datapoints and group size {train_config.group_size} "
+            f"for GRPO step {grpo_step}..."
+        )
         repeated_model_input_prompts, model_responses, repeated_ground_truth_answers = (
             grpo_utils.sample_grpo_rollouts(
                 model=vllm_old_model,
@@ -278,15 +319,11 @@ def main(argv):
             output_strs=model_responses,
             tokenizer=tokenizer,
         )
-        with torch.inference_mode():
-            old_log_probs = sft_helpers.get_response_log_probs(
-                model=policy_model,
-                input_ids=tokenized_input_dict["input_ids"],
-                labels=tokenized_input_dict["labels"],
-                return_token_entropy=False,
-            )["log_probs"]
-            # Move to CPU to save memory.
-            old_log_probs = old_log_probs.to(device="cpu")
+        old_log_probs = _get_old_log_probs(
+            policy_model=policy_model,
+            tokenized_input_dict=tokenized_input_dict,
+            train_config=train_config,
+        )
         group_normalized_rewards, raw_rewards, rewards_metadata = (
             grpo_utils.compute_group_normalized_rewards(
                 reward_fn=custom_grader.gsm8k_reward_fn,
