@@ -154,7 +154,7 @@ def run_compute_naive_policy_gradient_loss(
     """
     return grpo_utils.compute_naive_policy_gradient_loss(
         raw_rewards_or_advantages=raw_rewards_or_advantages,
-        policy_log_probs=policy_log_probs
+        policy_log_probs=policy_log_probs,
     )
 
 
@@ -163,7 +163,7 @@ def run_compute_grpo_clip_loss(
     policy_log_probs: torch.Tensor,
     old_log_probs: torch.Tensor,
     cliprange: float,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict[str, Any]]:
     """Compute the GRPO-Clip loss.
 
     Args:
@@ -179,10 +179,15 @@ def run_compute_grpo_clip_loss(
         tuple[torch.Tensor, dict[str, torch.Tensor]]:
             torch.Tensor of shape (batch_size, sequence_length):
                 the GRPO-Clip per-token loss.
-            dict[str, torch.Tensor]: metadata for the GRPO-Clip loss
+            dict[str, Any]: metadata for the GRPO-Clip loss
                 (used to compute clip fraction).
     """
-    raise NotImplementedError
+    return grpo_utils.compute_grpo_clip_loss(
+        advantages=advantages,
+        policy_log_probs=policy_log_probs,
+        old_log_probs=old_log_probs,
+        cliprange=cliprange,
+    )
 
 
 def run_compute_policy_gradient_loss(

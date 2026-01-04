@@ -94,3 +94,33 @@ def compute_naive_policy_gradient_loss(
             the naive policy gradient loss.
     """
     return -raw_rewards_or_advantages * policy_log_probs
+
+
+def compute_grpo_clip_loss(
+    advantages: Float[torch.Tensor, "rollout_batch_size 1"],
+    policy_log_probs: Float[torch.Tensor, "rollout_batch_size seq_len"],
+    old_log_probs: Float[torch.Tensor, "rollout_batch_size seq_len"],
+    cliprange: float,
+) -> tuple[Float[torch.Tensor, "rollout_batch_size seq_len"], dict[str, Any]]:
+    """Compute the GRPO-Clip loss.
+
+    Args:
+        advantages: torch.Tensor of shape (rollout_batch_size, 1):
+            the advantages for each rollout response.
+        policy_log_probs: torch.Tensor of shape (rollout_batch_size, sequence_length):
+            the log-probs of the policy.
+        old_log_probs: torch.Tensor of shape (rollout_batch_size, sequence_length):
+            the log-probs of the old policy.
+        cliprange: float, the clip range for the ratio.
+
+    Returns:
+        torch.Tensor of shape (rollout_batch_size, sequence_length):
+            the GRPO-Clip per-token loss.
+        dict[str, Any]: metadata for the GRPO-Clip loss
+    """
+    rho = torch.exp(policy_log_probs - old_log_probs)
+    first_term = advantages * rho
+    second_term = advantages * torch.clip(rho, min=1 - cliprange, max=1 + cliprange)
+    grpo_per_token_clipped_loss = -torch.minimum(first_term, second_term)
+    is_token_clipped = second_term > first_term
+    return (grpo_per_token_clipped_loss, {"is_token_clipped": is_token_clipped})
