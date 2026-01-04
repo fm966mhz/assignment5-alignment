@@ -8,8 +8,8 @@ import datasets
 import numpy as np
 import torch
 import transformers
-import wandb
 import vllm
+import wandb
 
 from absl import app
 from absl import flags
@@ -247,11 +247,20 @@ def main(argv):
         config=train_config,
     )
     logging.info(f"GRPO training configuration: {train_config}")
+    optimizer = _get_optimizer(
+        policy_model=policy_model,
+        train_config=train_config,
+    )
     for grpo_step in range(train_config.n_grpo_steps):
         logging.info(f"Starting GRPO step {grpo_step}...")
         train_ds_batch = _randomly_sample_batch(
             ds=train_ds, num_datapoints=num_datapoints_per_grpo_batch
         )
+        if grpo_step > 0:
+            vllm_utils.load_policy_into_vllm_instance(
+                policy=policy_model,
+                vllm_instance=vllm_old_model,
+            )
         repeated_model_input_prompts, model_responses, repeated_ground_truth_answers = (
             grpo_utils.sample_grpo_rollouts(
                 model=vllm_old_model,
@@ -287,10 +296,6 @@ def main(argv):
                 advantage_eps=train_config.advantage_epsilon,
                 normalize_by_std=train_config.use_std_normalization,
             )
-        )
-        optimizer = _get_optimizer(
-            policy_model=policy_model,
-            train_config=train_config,
         )
         for epoch in range(train_config.epochs_per_rollout_batch):
             grpo_utils.grpo_train_one_epoch(
