@@ -24,8 +24,8 @@ def tokenize_prompt_and_output(
     """Tokenizes prompts and outputs using the provided tokenizer.
 
     Args:
-        prompt_strs: List of prompt strings.
-        output_strs: List of output strings.
+        prompt_strs: List of prompt strings. This is what is fed to the tokenizer.
+        output_strs: List of output strings. This is what is expected from the tokenizer.
         tokenizer: The tokenizer to use.
 
     Returns:
