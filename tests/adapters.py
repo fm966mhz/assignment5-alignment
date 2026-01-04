@@ -192,16 +192,23 @@ def run_compute_grpo_clip_loss(
 
 def run_compute_policy_gradient_loss(
     policy_log_probs: torch.Tensor,
-    loss_type: str,
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
     raw_rewards: torch.Tensor,
     advantages: torch.Tensor,
     old_log_probs: torch.Tensor,
     cliprange: float,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Wrapper that delegates to the appropriate policy gradient loss function above.
     """
-    raise NotImplementedError
+    return grpo_utils.compute_policy_gradient_loss(
+        policy_log_probs=policy_log_probs,
+        loss_type=loss_type,
+        raw_rewards=raw_rewards,
+        advantages=advantages,
+        old_log_probs=old_log_probs,
+        cliprange=cliprange,
+    )
 
 
 def run_masked_mean(

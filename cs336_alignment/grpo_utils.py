@@ -1,6 +1,6 @@
 """Utility functions for GRPO training."""
 
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import torch
 
@@ -124,3 +124,73 @@ def compute_grpo_clip_loss(
     grpo_per_token_clipped_loss = -torch.minimum(first_term, second_term)
     is_token_clipped = second_term > first_term
     return (grpo_per_token_clipped_loss, {"is_token_clipped": is_token_clipped})
+
+
+def compute_policy_gradient_loss(
+    policy_log_probs: Float[torch.Tensor, "rollout_batch_size seq_len"],
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    raw_rewards: Float[torch.Tensor, "rollout_batch_size 1"] | None = None,
+    advantages: Float[torch.Tensor, "rollout_batch_size 1"] | None = None,
+    old_log_probs: Float[torch.Tensor, "rollout_batch_size seq_len"] | None = None,
+    cliprange: float | None = None,
+) -> tuple[Float[torch.Tensor, "rollout_batch_size seq_len"], dict[str, Any]]:
+    """Compute the policy gradient loss.
+
+    Args:
+        policy_log_probs: torch.Tensor of shape (rollout_batch_size, sequence_length):
+            the log-probs of the policy.
+        loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+            the type of loss function to use.
+        raw_rewards: torch.Tensor of shape (rollout_batch_size, 1):
+            the raw rewards for each rollout response.
+        advantages: torch.Tensor of shape (rollout_batch_size, 1):
+            the advantages for each rollout response.
+        old_log_probs: torch.Tensor of shape (rollout_batch_size, sequence_length):
+            the log-probs of the old policy.
+        cliprange: float, the clip range for the ratio.
+
+    Returns:
+        torch.Tensor of shape (rollout_batch_size, sequence_length):
+            the policy gradient loss.
+        dict[str, Any]: metadata for the policy gradient loss
+    """
+    assert loss_type in {
+        "no_baseline",
+        "reinforce_with_baseline",
+        "grpo_clip",
+    }, f"Invalid loss type: {loss_type}"
+    if loss_type == "no_baseline":
+        assert (
+            raw_rewards is not None
+        ), "Raw rewards are required when loss type is 'no_baseline'."
+        return (
+            compute_naive_policy_gradient_loss(
+                raw_rewards_or_advantages=raw_rewards, policy_log_probs=policy_log_probs
+            ),
+            {},
+        )
+    elif loss_type == "reinforce_with_baseline":
+        assert (
+            advantages is not None
+        ), "Advantages are required when loss type is 'reinforce_with_baseline'."
+        return (
+            compute_naive_policy_gradient_loss(
+                raw_rewards_or_advantages=advantages, policy_log_probs=policy_log_probs
+            ),
+            {},
+        )
+    assert (
+        advantages is not None
+    ), "Advantages are required when loss type is 'grpo_clip'."
+    assert (
+        old_log_probs is not None
+    ), "Old log probs are required when loss type is 'grpo_clip'."
+    assert (
+        cliprange is not None
+    ), "Clip ranage is required when loss type is 'grpo_clip'."
+    return compute_grpo_clip_loss(
+        advantages=advantages,
+        policy_log_probs=policy_log_probs,
+        old_log_probs=old_log_probs,
+        cliprange=cliprange,
+    )
