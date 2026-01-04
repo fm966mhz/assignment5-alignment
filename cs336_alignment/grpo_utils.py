@@ -194,3 +194,27 @@ def compute_policy_gradient_loss(
         old_log_probs=old_log_probs,
         cliprange=cliprange,
     )
+
+
+def masked_mean(
+    tensor: Float[torch.Tensor, "..."],
+    mask: Float[torch.Tensor, "..."],
+    dim: int | None = None,
+) -> Float[torch.Tensor, "..."]:
+    """Computes the mean of the tensor along a dimension,
+    considering only the elements with mask value 1.
+
+    Args:
+        tensor: torch.Tensor, the tensor to compute the mean of.
+        mask: torch.Tensor, the mask. We only take the mean over
+            the elements with mask value 1.
+        dim: int | None, the dimension to compute the mean along.
+            If None, sum over all non-masked elements and average
+            by their total count.
+
+    Returns:
+        torch.Tensor, the mean of the tensor along the specified
+            dimension, considering only the elements with mask value 1.
+    """
+    assert tensor.shape == mask.shape, "Tensor and mask must have the same shape"
+    return torch.sum(tensor * mask, dim=dim) / torch.sum(mask, dim=dim)

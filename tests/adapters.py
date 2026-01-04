@@ -229,7 +229,11 @@ def run_masked_mean(
         torch.Tensor, the mean of the tensor along the specified
             dimension, considering only the elements with mask value 1.
     """
-    raise NotImplementedError
+    return grpo_utils.masked_mean(
+        tensor=tensor,
+        mask=mask,
+        dim=dim,
+    )
 
 
 def run_sft_microbatch_train_step(
