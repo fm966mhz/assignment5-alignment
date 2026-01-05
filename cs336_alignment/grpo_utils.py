@@ -309,6 +309,19 @@ def grpo_microbatch_train_step(
     return loss, metadata
 
 
+def _get_log_probs_from_vllm_responses(
+    completion_output: vllm.CompletionOutput,
+) -> Float[torch.Tensor, "seq_len"]:
+    """Get the log probabilities from a vLLM completion output."""
+    log_probs = []
+    for token_id, log_probs_dict in zip(
+        completion_output.token_ids,
+        completion_output.logprobs,
+    ):
+        log_probs.append(log_probs_dict[token_id].logprob)
+    return torch.tensor(log_probs)
+
+
 def sample_grpo_rollouts(
     *,
     model: vllm.LLM,
@@ -316,7 +329,7 @@ def sample_grpo_rollouts(
     questions: list[str],
     ground_truth_answers: list[str],
     prompt_fn: Callable[[list[str]], list[str]],
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[Float[torch.Tensor, "seq_len"]]]:
     """Samples GRPO rollouts.
 
     Args:
@@ -328,13 +341,28 @@ def sample_grpo_rollouts(
 
     Returns:
         tuple[list[str], list[str], list[str]]:
-            The repeated model input prompts, model responses, and repeated ground truth answers.
+            list[str]:
+                The repeated model input prompts.
+            list[str]:
+                The model responses.
+            list[str]:
+                The repeated ground truth answers.
+            list[Float[torch.Tensor, "seq_len"]]:
+                The log probabilities.
     """
+    assert len(questions) == len(ground_truth_answers), (
+        f"Questions length {len(questions)} doesn't match ground truth answers length "
+        f"{len(ground_truth_answers)}"
+    )
+    assert (
+        sampling_params.logprobs == 1
+    ), "Log probabilities are required for GRPO rollouts"
     input_prompts = prompt_fn(questions)
     raw_model_responses = model.generate(input_prompts, sampling_params)
     repeated_model_input_prompts = []
     model_responses = []
     repeated_ground_truth_answers = []
+    log_probs = []
     for model_response, ground_truth_answer in zip(
         raw_model_responses, ground_truth_answers
     ):
@@ -342,15 +370,19 @@ def sample_grpo_rollouts(
             repeated_model_input_prompts.append(model_response.prompt)
             model_responses.append(rollout.text)
             repeated_ground_truth_answers.append(ground_truth_answer)
+            log_probs.append(
+                _get_log_probs_from_vllm_responses(completion_output=rollout)
+            )
     return (
         repeated_model_input_prompts,
         model_responses,
         repeated_ground_truth_answers,
+        log_probs,
     )
 
 
 def get_microbatch_and_move_to_device(
-    input_tensor: torch.Tensor,
+    input_tensor: torch.Tensor | list[Float[torch.Tensor, "seq_len"]],
     microbatch_idx: int,
     microbatch_size: int,
     device: str | None = None,
@@ -359,6 +391,13 @@ def get_microbatch_and_move_to_device(
     microbatch = input_tensor[
         microbatch_idx * microbatch_size : (microbatch_idx + 1) * microbatch_size
     ]
+    if isinstance(microbatch, list):
+        microbatch = torch.nn.utils.rnn.pad_sequence(
+            sequences=microbatch,
+            batch_first=True,
+            padding_value=0,
+            padding_side="right",
+        )
     if device is not None and device.startswith("cuda"):
         microbatch = microbatch.pin_memory().to(device=device, non_blocking=True)
     return microbatch
@@ -371,7 +410,7 @@ def grpo_train_one_epoch(
     all_input_ids: Int[torch.Tensor, "rollout_batch_size seq_len"],
     all_labels: Int[torch.Tensor, "rollout_batch_size seq_len"],
     all_response_mask: Int[torch.Tensor, "rollout_batch_size seq_len"],
-    all_old_log_probs: Float[torch.Tensor, "rollout_batch_size seq_len"],
+    all_old_log_probs: list[Float[torch.Tensor, "seq_len"]],
     all_raw_rewards: Float[torch.Tensor, "rollout_batch_size"],
     all_format_rewards: Float[torch.Tensor, "rollout_batch_size"],
     all_answer_rewards: Float[torch.Tensor, "rollout_batch_size"],
