@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 
 def init_vllm(
-    model_id: str,
+    model_id_or_path: str,
     device: str,
     seed: int,
     gpu_memory_utilization: float,
@@ -17,7 +17,7 @@ def init_vllm(
     """Initializes a vLLM model.
 
     Args:
-        model_id: The ID of the model to initialize.
+        model_id_or_path: The ID or path of the model to initialize.
         device: The device to use for the model.
         seed: The seed to use for the model.
         gpu_memory_utilization: The GPU memory utilization to use for the model.
@@ -32,7 +32,7 @@ def init_vllm(
     )
     with world_size_patch, profiling_patch:
         return vllm.LLM(
-            model=model_id,
+            model=model_id_or_path,
             device=device,
             dtype="bfloat16",
             enable_prefix_caching=True,

@@ -24,8 +24,8 @@ from cs336_alignment import sft_helpers
 from cs336_alignment import vllm_utils
 
 
-_model_id = flags.DEFINE_string(
-    "model_id",
+_model_id_or_path = flags.DEFINE_string(
+    "model_id_or_path",
     "",
     "The ID of the model to use for training.",
 )
@@ -107,7 +107,7 @@ def _get_vllm_model_and_sampling_params(
             The vLLM model, training sampling parameters, and evaluation sampling parameters.
     """
     vllm_model = vllm_utils.init_vllm(
-        model_id=_model_id.value,
+        model_id_or_path=_model_id_or_path.value,
         device="cuda:1",
         seed=_seed.value,
         gpu_memory_utilization=train_config.gpu_memory_utilization,
@@ -144,13 +144,13 @@ def _get_policy_model_and_tokenizer(
 ) -> tuple[transformers.PreTrainedModel, transformers.PreTrainedTokenizerBase]:
     """Gets the policy model and tokenizer."""
     policy_model = transformers.AutoModelForCausalLM.from_pretrained(
-        _model_id.value,
+        _model_id_or_path.value,
         dtype=torch.bfloat16,
     ).to(
         device  # pyright: ignore[reportArgumentType]
     )
     tokenizer = transformers.AutoTokenizer.from_pretrained(
-        _model_id.value,
+        _model_id_or_path.value,
     )
     return policy_model, tokenizer  # pyright: ignore[reportReturnType]
 

@@ -5,7 +5,7 @@ set -euo pipefail
 BASE_DIR="$1"
 EXP_NAME="$2"
 
-MODEL_ID="Qwen/Qwen2.5-Math-1.5B"
+MODEL_ID_OR_PATH="Qwen/Qwen2.5-Math-1.5B"
 PROMPT_TEMPLATE_PATH="$BASE_DIR/assignment5-alignment/cs336_alignment/prompts/my_system_prompt.prompt"
 OUTPUT_DIR="$BASE_DIR/notes_and_writeups/assignment5_output/$EXP_NAME"
 TASK_NAME="gsm8k"
@@ -14,7 +14,7 @@ WANDB_PROJECT="cs336-assignment5-alignment"
 WANDB_RUN_NAME="$EXP_NAME"
 SEED=42
 N_GRPO_STEPS=200
-LEARNING_RATE=6e-5
+LEARNING_RATE=4e-5
 ADVANTAGE_EPSILON=1e-6
 ROLLOUT_BATCH_SIZE=256
 GROUP_SIZE=8
@@ -28,7 +28,7 @@ TRAIN_BATCH_SIZE=256
 EVALUATION_SAMPLE_SIZE=-1
 GRADIENT_ACCUMULATION_STEPS=128
 GPU_MEMORY_UTILIZATION=0.85
-LOSS_TYPE="reinforce_with_baseline"
+LOSS_TYPE="no_baseline"
 USE_STD_NORMALIZATION=True
 ADAMW_WEIGHT_DECAY=0
 ADAMW_BETA_1=0.9
@@ -42,7 +42,7 @@ MAX_NUM_CHECKPOINTS=4
 
 
 uv run cs336_alignment/grpo_train_main.py \
-    --model_id="$MODEL_ID" \
+    --model_id_or_path="$MODEL_ID_OR_PATH" \
     --prompt_template_path="$PROMPT_TEMPLATE_PATH" \
     --output_dir="$OUTPUT_DIR" \
     --task_name="$TASK_NAME" \
