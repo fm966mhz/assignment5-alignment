@@ -562,7 +562,7 @@ def grpo_train_one_epoch(
                 f"Evaluating policy model on validation set at GRPO step "
                 f"{grpo_step}/{train_config.n_grpo_steps}, "
                 f"epoch {epoch}/{train_config.epochs_per_rollout_batch}, "
-                f"microbatch {microbatch_idx}/{train_config.n_microbatches_per_rollout_batch}..."
+                f"microbatch {microbatch_idx + 1}/{train_config.n_microbatches_per_rollout_batch}..."
             )
             vllm_utils.load_policy_into_vllm_instance(
                 policy=policy_model,

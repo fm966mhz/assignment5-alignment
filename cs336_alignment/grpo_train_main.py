@@ -7,7 +7,6 @@ from typing import Any
 import datasets
 import numpy as np
 import torch
-import tqdm
 import transformers
 import vllm
 import wandb
@@ -20,6 +19,7 @@ from cs336_alignment import custom_grader
 from cs336_alignment import data_utils
 from cs336_alignment import grpo_train_config
 from cs336_alignment import grpo_utils
+from cs336_alignment import pretrained_model_checkpoint
 from cs336_alignment import sft_helpers
 from cs336_alignment import vllm_utils
 
@@ -58,6 +58,16 @@ _seed = flags.DEFINE_integer(
     "seed",
     42,
     "The seed to use for training.",
+)
+_checkpoint_every_n_grpo_steps = flags.DEFINE_integer(
+    "checkpoint_every_n_grpo_steps",
+    1,
+    "The number of GRPO steps to use for checkpointing.",
+)
+_max_num_checkpoints = flags.DEFINE_integer(
+    "max_num_checkpoints",
+    4,
+    "The maximum number of checkpoints to save.",
 )
 
 
@@ -222,6 +232,19 @@ def _init_wandb_run(
     )
 
 
+def _get_pretrained_model_checkpoint_manager(
+    output_dir: str,
+    output_name_prefix: str,
+    max_num_checkpoints: int,
+) -> pretrained_model_checkpoint.PretrainedModelCheckpointManager:
+    """Gets the pretrained model checkpoint manager."""
+    return pretrained_model_checkpoint.PretrainedModelCheckpointManager(
+        output_dir=output_dir,
+        output_name_prefix=output_name_prefix,
+        max_num_checkpoints=max_num_checkpoints,
+    )
+
+
 def main(argv):
     """Main function for GRPO training."""
     if len(argv) > 1:
@@ -253,6 +276,11 @@ def main(argv):
     optimizer = _get_optimizer(
         policy_model=policy_model,
         train_config=train_config,
+    )
+    pretrained_model_checkpoint_manager = _get_pretrained_model_checkpoint_manager(
+        output_dir=_output_dir.value,
+        output_name_prefix="grpo_model",
+        max_num_checkpoints=_max_num_checkpoints.value,
     )
     for grpo_step in range(train_config.n_grpo_steps):
         logging.info(f"Starting GRPO step {grpo_step}...")
@@ -320,16 +348,19 @@ def main(argv):
                 grpo_step=grpo_step,
                 epoch=epoch,
             )
-        logging.info(f"Saving policy model and tokenizer for GRPO step {grpo_step}...")
-        policy_model.save_pretrained(
-            os.path.join(_output_dir.value, f"grpo_step_{grpo_step}")
-        )
-        tokenizer.save_pretrained(
-            os.path.join(_output_dir.value, f"grpo_step_{grpo_step}")
-        )
-        logging.info(
-            f"Policy model and tokenizer saved successfully to {os.path.join(_output_dir.value, f'grpo_step_{grpo_step}')}."
-        )
+        if grpo_step % _checkpoint_every_n_grpo_steps.value == 0:
+            logging.info(
+                f"Saving policy model and tokenizer for GRPO step {grpo_step}..."
+            )
+            checkpoint_dir_name = pretrained_model_checkpoint_manager.save_checkpoint(
+                model=policy_model,
+                tokenizer=tokenizer,
+                step=grpo_step,
+            )
+            logging.info(
+                f"Policy model and tokenizer saved successfully to "
+                f"{os.path.join(_output_dir.value, checkpoint_dir_name)}."
+            )
 
 
 if __name__ == "__main__":
