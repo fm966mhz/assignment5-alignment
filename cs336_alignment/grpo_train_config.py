@@ -82,6 +82,11 @@ _loss_type = flags.DEFINE_enum(
     ["no_baseline", "reinforce_with_baseline", "grpo_clip"],
     "The type of loss to use for training.",
 )
+_use_length_normalization = flags.DEFINE_boolean(
+    "use_length_normalization",
+    True,
+    "Whether to use length normalization for rewards.",
+)
 _use_std_normalization = flags.DEFINE_boolean(
     "use_std_normalization",
     True,
@@ -144,6 +149,7 @@ class GrpoTrainConfig:  # pylint: disable=too-many-instance-attributes
     gradient_accumulation_steps: int
     gpu_memory_utilization: float
     loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"]
+    use_length_normalization: bool
     use_std_normalization: bool
     adamw_weight_decay: float
     adamw_beta_1: float
@@ -195,6 +201,7 @@ def get_grpo_train_config() -> GrpoTrainConfig:
             Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
             _loss_type.value,
         ),
+        use_length_normalization=_use_length_normalization.value,
         use_std_normalization=_use_std_normalization.value,
         adamw_weight_decay=_adamw_weight_decay.value,
         adamw_beta_1=_adamw_beta_1.value,

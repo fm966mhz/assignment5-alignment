@@ -324,6 +324,8 @@ def grpo_microbatch_train_step(
     response_mask: Float[torch.Tensor, "batch_size seq_len"],
     gradient_accumulation_steps: int,
     loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    use_length_normalization: bool,
+    max_sampling_length: int,
     raw_rewards: Float[torch.Tensor, "batch_size 1"] | None = None,
     advantages: Float[torch.Tensor, "batch_size 1"] | None = None,
     old_log_probs: Float[torch.Tensor, "batch_size seq_len"] | None = None,
@@ -343,6 +345,9 @@ def grpo_microbatch_train_step(
         gradient_accumulation_steps: int, the number of gradient accumulation steps.
         loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
             the type of loss function to use.
+        use_length_normalization: bool, whether to use length normalization for rewards.
+        max_sampling_length: int, the maximum sampling length. This is for normalizing per-token
+            loss when `use_length_normalization` is False.
         raw_rewards: torch.Tensor of shape (batch_size, 1):
             the raw rewards for each rollout response.
         advantages: torch.Tensor of shape (batch_size, 1):
@@ -363,9 +368,23 @@ def grpo_microbatch_train_step(
         old_log_probs=old_log_probs,
         cliprange=cliprange,
     )
-    loss = (
-        masked_mean(tensor=batch_loss, mask=response_mask) / gradient_accumulation_steps
-    )
+    if use_length_normalization:
+        loss = (
+            masked_mean(tensor=batch_loss, mask=response_mask)
+            / gradient_accumulation_steps
+        )
+    else:
+        loss = (
+            torch.mean(
+                sft_helpers.masked_normalize(
+                    tensor=batch_loss,
+                    mask=response_mask,
+                    normalize_constant=max_sampling_length,
+                    dim=-1,
+                )
+            )
+            / gradient_accumulation_steps
+        )
     loss.backward()
     return loss, metadata
 
@@ -377,7 +396,7 @@ def _get_log_probs_from_vllm_responses(
     log_probs = []
     for token_id, log_probs_dict in zip(
         completion_output.token_ids,
-        completion_output.logprobs,
+        completion_output.logprobs,  # pyright: ignore[reportArgumentType]
     ):
         log_probs.append(log_probs_dict[token_id].logprob)
     return torch.tensor(log_probs)
@@ -507,6 +526,8 @@ def run_evaluation(
             target_list=eval_ds_batch["target"],
             eval_sampling_params=evaluation_sampling_params,
         )
+    else:
+        raise ValueError(f"Invalid task name: {task_name}")
     wandb_run.log(
         {
             "eval/reward": eval_result.score,
@@ -642,6 +663,8 @@ def grpo_train_one_epoch(
             response_mask=microbatch_response_mask,
             gradient_accumulation_steps=train_config.gradient_accumulation_steps,
             loss_type=train_config.loss_type,
+            use_length_normalization=train_config.use_length_normalization,
+            max_sampling_length=train_config.sampling_max_tokens,
             raw_rewards=microbatch_raw_rewards,
             advantages=microbatch_advantages,
             old_log_probs=microbatch_old_log_probs,

@@ -135,11 +135,7 @@ def masked_normalize(
     """Runs masked normalize on tensor."""
     return (
         torch.sum(
-            torch.where(
-                mask == 1,
-                tensor,
-                0.0,
-            ),
+            tensor * mask,
             dim=dim,
         )
         / normalize_constant
