@@ -5,7 +5,6 @@ import os
 from typing import Any
 
 import datasets
-import numpy as np
 import torch
 import transformers
 import vllm
@@ -53,6 +52,12 @@ _wandb_run_name = flags.DEFINE_string(
     "wandb_run_name",
     "",
     "The name of the run to use for Weights and Biases.",
+)
+_task_name = flags.DEFINE_enum(
+    "task_name",
+    "gsm8k",
+    ["gsm8k", "countdown"],
+    "The name of the task to use for training.",
 )
 _seed = flags.DEFINE_integer(
     "seed",
@@ -149,19 +154,35 @@ def _get_policy_model_and_tokenizer(
     return policy_model, tokenizer  # pyright: ignore[reportReturnType]
 
 
-def _get_train_eval_datasets() -> tuple[datasets.Dataset, datasets.Dataset]:
+def _get_train_eval_datasets(
+    task_name: str,
+) -> tuple[datasets.Dataset, datasets.Dataset]:
     """Gets the training and evaluation datasets."""
-    train_ds = datasets.load_dataset(
-        "openai/gsm8k",
-        "main",
-        split="train",
-    )
-    eval_ds = datasets.load_dataset(
-        "openai/gsm8k",
-        "main",
-        split="test",
-    )
-    return train_ds, eval_ds
+    if task_name == "gsm8k":
+        train_ds = datasets.load_dataset(
+            "openai/gsm8k",
+            "main",
+            split="train",
+        )
+        eval_ds = datasets.load_dataset(
+            "openai/gsm8k",
+            "main",
+            split="test",
+        )
+        return train_ds, eval_ds
+    elif task_name == "countdown":
+        countdown_ds = datasets.load_dataset(
+            "Jiayi-Pan/Countdown-Tasks-3to4",
+            split="train",
+        )
+        split_dataset_dict = countdown_ds.train_test_split(
+            test_size=0.15, shuffle=False, seed=_seed.value
+        )
+        train_ds = split_dataset_dict["train"]
+        eval_ds = split_dataset_dict["test"]
+        return train_ds, eval_ds
+    else:
+        raise ValueError(f"Invalid task name: {task_name}")
 
 
 def _get_optimizer(
@@ -174,16 +195,6 @@ def _get_optimizer(
         lr=train_config.learning_rate,
         weight_decay=train_config.adamw_weight_decay,
         betas=(train_config.adamw_beta_1, train_config.adamw_beta_2),
-    )
-
-
-def _randomly_sample_batch(
-    ds: datasets.Dataset,
-    num_datapoints: int,
-) -> datasets.Dataset:
-    """Randomly samples a batch of datapoints from the dataset."""
-    return ds.select(
-        np.random.choice(range(len(ds)), size=num_datapoints, replace=False)
     )
 
 
@@ -245,6 +256,107 @@ def _get_pretrained_model_checkpoint_manager(
     )
 
 
+def _get_grpo_train_one_epoch_data_for_gsm8k(
+    vllm_old_model: vllm.LLM,
+    training_sampling_params: vllm.SamplingParams,
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    train_ds_batch: datasets.Dataset,
+    train_config: grpo_train_config.GrpoTrainConfig,
+    prompt_template: str,
+):
+    """Gets the data for the GRPO train one epoch function for GSM8K."""
+    (
+        repeated_model_input_prompts,
+        model_responses,
+        repeated_ground_truth_answers,
+        old_log_probs,
+    ) = grpo_utils.sample_grpo_rollouts(
+        model=vllm_old_model,
+        sampling_params=training_sampling_params,
+        questions=train_ds_batch["question"],
+        ground_truth_answers=train_ds_batch["answer"],
+        prompt_fn=lambda questions: data_utils.generate_gsm8k_prompt_from_question_list(
+            prompt_template=prompt_template,
+            questions=questions,
+        ),
+    )
+    tokenized_input_dict = sft_helpers.tokenize_prompt_and_output(
+        prompt_strs=repeated_model_input_prompts,
+        output_strs=model_responses,
+        tokenizer=tokenizer,
+    )
+    group_normalized_rewards, raw_rewards, rewards_metadata = (
+        grpo_utils.compute_group_normalized_rewards(
+            reward_fn=custom_grader.gsm8k_reward_fn,
+            rollout_responses=model_responses,
+            repeated_ground_truths=repeated_ground_truth_answers,
+            group_size=train_config.group_size,
+            advantage_eps=train_config.advantage_epsilon,
+            normalize_by_std=train_config.use_std_normalization,
+        )
+    )
+    return (
+        tokenized_input_dict,
+        old_log_probs,
+        raw_rewards,
+        rewards_metadata,
+        group_normalized_rewards,
+    )
+
+
+def _get_grpo_train_one_epoch_data_for_countdown(
+    vllm_old_model: vllm.LLM,
+    training_sampling_params: vllm.SamplingParams,
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    train_ds_batch: datasets.Dataset,
+    train_config: grpo_train_config.GrpoTrainConfig,
+    prompt_template: str,
+):
+    """Gets the data for the GRPO train one epoch function for Countdown."""
+    input_prompts = data_utils.generate_countdown_prompt_from_nums_target_lists(
+        prompt_template=prompt_template,
+        nums_list=train_ds_batch["nums"],
+        target_list=train_ds_batch["target"],
+    )
+    repeated_model_input_prompts, model_responses, _, old_log_probs = (
+        grpo_utils.sample_grpo_rollouts(
+            model=vllm_old_model,
+            sampling_params=training_sampling_params,
+            questions=input_prompts,
+            ground_truth_answers=train_ds_batch["target"],
+            prompt_fn=lambda questions: questions,
+        )
+    )
+    tokenized_input_dict = sft_helpers.tokenize_prompt_and_output(
+        prompt_strs=repeated_model_input_prompts,
+        output_strs=model_responses,
+        tokenizer=tokenizer,
+    )
+    repeated_nums_list = []
+    repeated_target_list = []
+    for nums, target in zip(train_ds_batch["nums"], train_ds_batch["target"]):
+        repeated_nums_list.extend([nums] * train_config.group_size)
+        repeated_target_list.extend([target] * train_config.group_size)
+    group_normalized_rewards, raw_rewards, rewards_metadata = (
+        grpo_utils.compute_group_normalized_rewards_for_countdown(
+            reward_fn=custom_grader.countdown_reward_fn,
+            rollout_responses=model_responses,
+            repeated_nums_list=repeated_nums_list,
+            repeated_target_list=repeated_target_list,
+            group_size=train_config.group_size,
+            advantage_eps=train_config.advantage_epsilon,
+            normalize_by_std=train_config.use_std_normalization,
+        )
+    )
+    return (
+        tokenized_input_dict,
+        old_log_probs,
+        raw_rewards,
+        rewards_metadata,
+        group_normalized_rewards,
+    )
+
+
 def main(argv):
     """Main function for GRPO training."""
     if len(argv) > 1:
@@ -258,11 +370,14 @@ def main(argv):
     vllm_old_model, training_sampling_params, evaluation_sampling_params = (
         _get_vllm_model_and_sampling_params(policy_model, train_config)
     )
-    train_ds, eval_ds = _get_train_eval_datasets()
+    prompt_template = _load_prompt_template(_prompt_template_path.value)
+    train_ds, eval_ds = _get_train_eval_datasets(
+        prompt_template=prompt_template,
+        task_name=_task_name.value,
+    )
     num_datapoints_per_grpo_batch = (
         train_config.rollout_batch_size // train_config.group_size
     )
-    prompt_template = _load_prompt_template(_prompt_template_path.value)
     wandb_run = _init_wandb_run(
         wandb_entity=_wandb_entity.value,
         wandb_project=_wandb_project.value,
@@ -284,7 +399,7 @@ def main(argv):
     )
     for grpo_step in range(train_config.n_grpo_steps):
         logging.info(f"Starting GRPO step {grpo_step}...")
-        train_ds_batch = _randomly_sample_batch(
+        train_ds_batch = grpo_utils.randomly_sample_batch(
             ds=train_ds, num_datapoints=num_datapoints_per_grpo_batch
         )
         if grpo_step > 0:
@@ -297,40 +412,43 @@ def main(argv):
             f"{len(train_ds_batch)} datapoints and group size {train_config.group_size} "
             f"for GRPO step {grpo_step}..."
         )
-        (
-            repeated_model_input_prompts,
-            model_responses,
-            repeated_ground_truth_answers,
-            old_log_probs,
-        ) = grpo_utils.sample_grpo_rollouts(
-            model=vllm_old_model,
-            sampling_params=training_sampling_params,
-            questions=train_ds_batch["question"],
-            ground_truth_answers=train_ds_batch["answer"],
-            prompt_fn=lambda questions: data_utils.generate_gsm8k_prompt_from_question_list(
+        if _task_name.value == "gsm8k":
+            (
+                tokenized_input_dict,
+                old_log_probs,
+                raw_rewards,
+                rewards_metadata,
+                group_normalized_rewards,
+            ) = _get_grpo_train_one_epoch_data_for_gsm8k(
+                vllm_old_model=vllm_old_model,
+                training_sampling_params=training_sampling_params,
+                tokenizer=tokenizer,
+                train_ds_batch=train_ds_batch,
+                train_config=train_config,
                 prompt_template=prompt_template,
-                questions=questions,
-            ),
-        )
-        tokenized_input_dict = sft_helpers.tokenize_prompt_and_output(
-            prompt_strs=repeated_model_input_prompts,
-            output_strs=model_responses,
-            tokenizer=tokenizer,
-        )
-        group_normalized_rewards, raw_rewards, rewards_metadata = (
-            grpo_utils.compute_group_normalized_rewards(
-                reward_fn=custom_grader.gsm8k_reward_fn,
-                rollout_responses=model_responses,
-                repeated_ground_truths=repeated_ground_truth_answers,
-                group_size=train_config.group_size,
-                advantage_eps=train_config.advantage_epsilon,
-                normalize_by_std=train_config.use_std_normalization,
             )
-        )
+        elif _task_name.value == "countdown":
+            (
+                tokenized_input_dict,
+                old_log_probs,
+                raw_rewards,
+                rewards_metadata,
+                group_normalized_rewards,
+            ) = _get_grpo_train_one_epoch_data_for_countdown(
+                vllm_old_model=vllm_old_model,
+                training_sampling_params=training_sampling_params,
+                tokenizer=tokenizer,
+                train_ds_batch=train_ds_batch,
+                train_config=train_config,
+                prompt_template=prompt_template,
+            )
+        else:
+            raise ValueError(f"Invalid task name: {_task_name.value}")
         for epoch in range(train_config.epochs_per_rollout_batch):
             grpo_utils.grpo_train_one_epoch(
                 policy_model=policy_model,
                 optimizer=optimizer,
+                task_name=_task_name.value,
                 all_input_ids=tokenized_input_dict["input_ids"],
                 all_labels=tokenized_input_dict["labels"],
                 all_response_mask=tokenized_input_dict["response_mask"],

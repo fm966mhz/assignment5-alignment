@@ -102,6 +102,18 @@ def generate_countdown_prompt_collate(
     }  # pyright: ignore[reportReturnType]
 
 
+def format_countdown_question(nums: list[int], target: int) -> str:
+    """Formats a Countdown question."""
+    return (
+        f"You're given the following numbers: {nums}. "
+        f"Use addition ('+'), subtraction ('-'), multiplication ('*'), division ('/') and "
+        f"paraentheses ('()') to reach the "
+        f"target number: {target}. You need to use each number exactly once. You can use the "
+        f"operations as many times as you want.\nGive your final answer as a "
+        f"single arithmetic expression."
+    )
+
+
 def generate_countdown_prompt_from_nums_target_lists(
     prompt_template: str, nums_list: list[list[int]], target_list: list[int]
 ) -> list[str]:
@@ -117,16 +129,6 @@ def generate_countdown_prompt_from_nums_target_lists(
     """
     prompts = []
     for nums, target in zip(nums_list, target_list):
-        question = (
-            f"You're given the following numbers: {nums}. "
-            f"Use addition ('+'), subtraction ('-'), multiplication ('*'), division ('/') and "
-            f"paraentheses ('()') to reach the "
-            f"target number: {target}. You need to use each number exactly once. You can use the "
-            f"operations as many times as you want.\nGive your final answer as a "
-            f"single arithmetic expression."
-        )
-        prompt = prompt_template.format(
-            question=question,
-        )
-        prompts.append(prompt)
+        question = format_countdown_question(nums, target)
+        prompts.append(prompt_template.format(question=question))
     return prompts

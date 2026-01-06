@@ -3,6 +3,7 @@
 from typing import Any, Callable, Literal
 
 import datasets
+import numpy as np
 import torch
 import tqdm
 import transformers
@@ -75,6 +76,65 @@ def compute_group_normalized_rewards(  # pylint: disable=too-many-arguments
         rollout_responses, repeated_ground_truths
     ):
         reward_dict = reward_fn(rollout_response, ground_truth)
+        raw_rewards_per_question.append(reward_dict.get("reward", 0.0))
+        all_format_rewards.append(reward_dict.get("format_reward", 0.0))
+        all_answer_rewards.append(reward_dict.get("answer_reward", 0.0))
+        if len(raw_rewards_per_question) % group_size == 0:
+            all_raw_rewards.append(raw_rewards_per_question)
+            raw_rewards_per_question = []
+    all_format_rewards = torch.tensor(all_format_rewards)
+    all_answer_rewards = torch.tensor(all_answer_rewards)
+    all_raw_rewards = torch.tensor(all_raw_rewards)
+    group_normalized_rewards = all_raw_rewards - torch.mean(
+        all_raw_rewards, dim=-1, keepdim=True
+    )
+    if normalize_by_std:
+        group_normalized_rewards = group_normalized_rewards / (
+            torch.std(all_raw_rewards, dim=-1, keepdim=True) + advantage_eps
+        )
+    return (
+        group_normalized_rewards.reshape(-1, 1),
+        all_raw_rewards.reshape(-1, 1),
+        {
+            "format_rewards": all_format_rewards.reshape(-1, 1),
+            "answer_rewards": all_answer_rewards.reshape(-1, 1),
+        },
+    )
+
+
+def compute_group_normalized_rewards_for_countdown(
+    reward_fn: Callable[[str, list[int], int], dict[str, float]],
+    rollout_responses: list[str],
+    repeated_nums_list: list[list[int]],
+    repeated_target_list: list[int],
+    group_size: int,
+    *,
+    advantage_eps: float,
+    normalize_by_std: bool,
+) -> tuple[
+    Float[torch.Tensor, "rollout_batch_size 1"],
+    Float[torch.Tensor, "rollout_batch_size 1"],
+    dict[str, Float[torch.Tensor, "rollout_batch_size 1"]],
+]:
+    """Computes group-normalized rewards for a batch of rollout responses for Countdown."""
+    assert (
+        len(rollout_responses) == len(repeated_nums_list) == len(repeated_target_list)
+    ), (
+        f"Rolloutput response length {len(rollout_responses)} doesn't match nums list length "
+        f"{len(repeated_nums_list)} or target list length {len(repeated_target_list)}"
+    )
+    assert len(rollout_responses) % group_size == 0, (
+        f"Rollout responses length {len(rollout_responses)} cannot be divided by group size "
+        f"{group_size}"
+    )
+    all_raw_rewards = []
+    all_format_rewards = []
+    all_answer_rewards = []
+    raw_rewards_per_question = []
+    for rollout_response, nums, target in zip(
+        rollout_responses, repeated_nums_list, repeated_target_list
+    ):
+        reward_dict = reward_fn(rollout_response, nums, target)
         raw_rewards_per_question.append(reward_dict.get("reward", 0.0))
         all_format_rewards.append(reward_dict.get("format_reward", 0.0))
         all_answer_rewards.append(reward_dict.get("answer_reward", 0.0))
@@ -382,6 +442,90 @@ def sample_grpo_rollouts(
     )
 
 
+def randomly_sample_batch(
+    ds: datasets.Dataset,
+    num_datapoints: int,
+) -> datasets.Dataset:
+    """Randomly samples a batch of datapoints from the dataset."""
+    if num_datapoints == -1:
+        return ds
+    return ds.select(
+        np.random.choice(range(len(ds)), size=num_datapoints, replace=False)
+    )
+
+
+def run_evaluation(
+    *,
+    vllm_old_model: vllm.LLM,
+    evaluation_sampling_params: vllm.SamplingParams,
+    policy_model: transformers.PreTrainedModel,
+    train_config: grpo_train_config.GrpoTrainConfig,
+    eval_ds: datasets.Dataset,
+    task_name: str,
+    prompt_template: str,
+    grpo_step: int,
+    epoch: int,
+    microbatch_idx: int,
+    wandb_run: Any,
+) -> None:
+    """Run evaluation on the model."""
+    logging.info(
+        f"Evaluating policy model on validation set at GRPO step "
+        f"{grpo_step}/{train_config.n_grpo_steps}, "
+        f"epoch {epoch}/{train_config.epochs_per_rollout_batch}, "
+        f"microbatch {microbatch_idx + 1}/{train_config.n_microbatches_per_rollout_batch}..."
+    )
+    eval_ds_batch = randomly_sample_batch(
+        ds=eval_ds,
+        num_datapoints=train_config.evaluation_sample_size,
+    )
+    vllm_utils.load_policy_into_vllm_instance(
+        policy=policy_model,
+        vllm_instance=vllm_old_model,
+    )
+    if task_name == "gsm8k":
+        eval_result = eval_utils.evaluate_on_gsm8k(
+            vllm_model=vllm_old_model,
+            reward_fn=custom_grader.gsm8k_reward_fn,
+            model_inputs=data_utils.generate_gsm8k_prompt_from_question_list(
+                prompt_template=prompt_template,
+                questions=eval_ds_batch["question"],
+            ),
+            ground_truth_answers=eval_ds_batch["answer"],
+            eval_sampling_params=evaluation_sampling_params,
+        )
+    elif task_name == "countdown":
+        eval_result = eval_utils.evaluate_on_countdown(
+            vllm_model=vllm_old_model,
+            reward_fn=custom_grader.countdown_reward_fn,
+            model_inputs=data_utils.generate_countdown_prompt_from_nums_target_lists(
+                prompt_template=prompt_template,
+                nums_list=eval_ds_batch["nums"],
+                target_list=eval_ds_batch["target"],
+            ),
+            nums_list=eval_ds_batch["nums"],
+            target_list=eval_ds_batch["target"],
+            eval_sampling_params=evaluation_sampling_params,
+        )
+    wandb_run.log(
+        {
+            "eval/reward": eval_result.score,
+            "eval/prompt_gt_correct_sample": eval_utils.get_sample_eval_result_table(
+                eval_result=eval_result,
+                max_num_samples=10,
+                correct_samples=True,
+                incorrect_samples=False,
+            ),
+            "eval/prompt_gt_incorrect_sample": eval_utils.get_sample_eval_result_table(
+                eval_result=eval_result,
+                max_num_samples=10,
+                correct_samples=False,
+                incorrect_samples=True,
+            ),
+        }
+    )
+
+
 def get_microbatch_and_move_to_device(
     input_tensor: torch.Tensor | list[Float[torch.Tensor, "seq_len"]],
     microbatch_idx: int,
@@ -408,6 +552,7 @@ def grpo_train_one_epoch(
     *,
     policy_model: transformers.PreTrainedModel,
     optimizer: torch.optim.Optimizer,
+    task_name: str,
     all_input_ids: Int[torch.Tensor, "rollout_batch_size seq_len"],
     all_labels: Int[torch.Tensor, "rollout_batch_size seq_len"],
     all_response_mask: Int[torch.Tensor, "rollout_batch_size seq_len"],
@@ -558,40 +703,16 @@ def grpo_train_one_epoch(
             train_config.validation_every_n_updates
             * train_config.gradient_accumulation_steps
         ) == 0:
-            logging.info(
-                f"Evaluating policy model on validation set at GRPO step "
-                f"{grpo_step}/{train_config.n_grpo_steps}, "
-                f"epoch {epoch}/{train_config.epochs_per_rollout_batch}, "
-                f"microbatch {microbatch_idx + 1}/{train_config.n_microbatches_per_rollout_batch}..."
-            )
-            vllm_utils.load_policy_into_vllm_instance(
-                policy=policy_model,
-                vllm_instance=vllm_old_model,
-            )
-            eval_result = eval_utils.evaluate_on_gsm8k(
-                vllm_model=vllm_old_model,
-                reward_fn=custom_grader.gsm8k_reward_fn,
-                model_inputs=data_utils.generate_gsm8k_prompt_from_question_list(
-                    prompt_template=prompt_template,
-                    questions=eval_ds["question"],
-                ),
-                ground_truth_answers=eval_ds["answer"],
-                eval_sampling_params=evaluation_sampling_params,
-            )
-            wandb_run.log(
-                {
-                    "eval/reward": eval_result.score,
-                    "eval/prompt_gt_correct_sample": eval_utils.get_sample_eval_result_table(
-                        eval_result=eval_result,
-                        max_num_samples=10,
-                        correct_samples=True,
-                        incorrect_samples=False,
-                    ),
-                    "eval/prompt_gt_incorrect_sample": eval_utils.get_sample_eval_result_table(
-                        eval_result=eval_result,
-                        max_num_samples=10,
-                        correct_samples=False,
-                        incorrect_samples=True,
-                    ),
-                }
+            run_evaluation(
+                vllm_old_model=vllm_old_model,
+                evaluation_sampling_params=evaluation_sampling_params,
+                policy_model=policy_model,
+                train_config=train_config,
+                prompt_template=prompt_template,
+                eval_ds=eval_ds,
+                task_name=task_name,
+                grpo_step=grpo_step,
+                epoch=epoch,
+                microbatch_idx=microbatch_idx,
+                wandb_run=wandb_run,
             )
