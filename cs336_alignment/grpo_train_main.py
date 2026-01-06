@@ -397,6 +397,7 @@ def main(argv):
         output_name_prefix="grpo_model",
         max_num_checkpoints=_max_num_checkpoints.value,
     )
+    global_update_count = 0
     for grpo_step in range(train_config.n_grpo_steps):
         logging.info(f"Starting GRPO step {grpo_step}...")
         train_ds_batch = grpo_utils.randomly_sample_batch(
@@ -445,7 +446,7 @@ def main(argv):
         else:
             raise ValueError(f"Invalid task name: {_task_name.value}")
         for epoch in range(train_config.epochs_per_rollout_batch):
-            grpo_utils.grpo_train_one_epoch(
+            global_update_count = grpo_utils.grpo_train_one_epoch(
                 policy_model=policy_model,
                 optimizer=optimizer,
                 task_name=_task_name.value,
@@ -465,6 +466,7 @@ def main(argv):
                 wandb_run=wandb_run,
                 grpo_step=grpo_step,
                 epoch=epoch,
+                global_update_count=global_update_count,
             )
         if grpo_step % _checkpoint_every_n_grpo_steps.value == 0:
             logging.info(

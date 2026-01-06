@@ -569,8 +569,15 @@ def grpo_train_one_epoch(
     wandb_run: Any,
     grpo_step: int,
     epoch: int,
-) -> None:
-    """Train the policy model for one epoch."""
+    global_update_count: int,
+) -> int:
+    """Train the policy model for one epoch.
+
+    Returns:
+        int: The global update count.
+    """
+    # Whether the last update has been evaluated and hence no need to evaluate again.
+    last_update_evaluated = True
     for microbatch_idx in tqdm.tqdm(
         range(train_config.n_microbatches_per_rollout_batch),
         desc=(
@@ -685,7 +692,8 @@ def grpo_train_one_epoch(
             )
             optimizer.step()
             optimizer.zero_grad()
-
+            global_update_count += 1
+            last_update_evaluated = False
         del (
             microbatch_input_ids,
             microbatch_labels,
@@ -699,10 +707,10 @@ def grpo_train_one_epoch(
             loss,
             metadata,
         )
-        if (microbatch_idx + 1) % (
-            train_config.validation_every_n_updates
-            * train_config.gradient_accumulation_steps
-        ) == 0:
+        if (
+            not last_update_evaluated
+            and global_update_count % train_config.validation_every_n_updates == 0
+        ):
             run_evaluation(
                 vllm_old_model=vllm_old_model,
                 evaluation_sampling_params=evaluation_sampling_params,
@@ -716,3 +724,5 @@ def grpo_train_one_epoch(
                 microbatch_idx=microbatch_idx,
                 wandb_run=wandb_run,
             )
+            last_update_evaluated = True
+    return global_update_count
