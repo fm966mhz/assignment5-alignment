@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 import datasets
+import numpy as np
 import torch
 import transformers
 import vllm
@@ -372,7 +373,6 @@ def main(argv):
     )
     prompt_template = _load_prompt_template(_prompt_template_path.value)
     train_ds, eval_ds = _get_train_eval_datasets(
-        prompt_template=prompt_template,
         task_name=_task_name.value,
     )
     num_datapoints_per_grpo_batch = (

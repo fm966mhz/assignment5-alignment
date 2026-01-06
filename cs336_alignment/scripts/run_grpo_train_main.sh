@@ -14,7 +14,7 @@ WANDB_PROJECT="cs336-assignment5-alignment"
 WANDB_RUN_NAME="$EXP_NAME"
 SEED=42
 N_GRPO_STEPS=200
-LEARNING_RATE=1e-5
+LEARNING_RATE=5e-6
 ADVANTAGE_EPSILON=1e-6
 ROLLOUT_BATCH_SIZE=256
 GROUP_SIZE=8
@@ -38,6 +38,7 @@ CLIPRANGE=0.2
 VALIDATION_EVERY_N_UPDATES=1
 LOG_TRAINING_METRICS_EVERY_N_MICROBATCHES=10
 CHECKPOINT_EVERY_N_GRPO_STEPS=1
+MAX_NUM_CHECKPOINTS=4
 
 
 uv run cs336_alignment/grpo_train_main.py \
@@ -73,4 +74,5 @@ uv run cs336_alignment/grpo_train_main.py \
     --cliprange="$CLIPRANGE" \
     --validation_every_n_updates="$VALIDATION_EVERY_N_UPDATES" \
     --log_training_metrics_every_n_microbatches="$LOG_TRAINING_METRICS_EVERY_N_MICROBATCHES" \
-    --checkpoint_every_n_grpo_steps="$CHECKPOINT_EVERY_N_GRPO_STEPS"
+    --checkpoint_every_n_grpo_steps="$CHECKPOINT_EVERY_N_GRPO_STEPS" \
+    --max_num_checkpoints="$MAX_NUM_CHECKPOINTS"

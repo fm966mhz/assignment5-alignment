@@ -34,6 +34,9 @@ class PretrainedModelCheckpointManager:
                 "step": [],
                 "checkpoint_dir_names": [],
             }
+            os.makedirs(self.output_dir, exist_ok=True)
+            with open(self.metadata_file_path, "wb") as f:
+                pickle.dump(self.metadata, f)
         self._trim_checkpoints()
 
     def _trim_checkpoints(self):
@@ -57,3 +60,4 @@ class PretrainedModelCheckpointManager:
         with open(self.metadata_file_path, "wb") as f:
             pickle.dump(self.metadata, f)
         self._trim_checkpoints()
+        return checkpoint_name
