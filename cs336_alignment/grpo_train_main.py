@@ -14,6 +14,7 @@ import wandb
 from absl import app
 from absl import flags
 from absl import logging
+from jaxtyping import Float, Int
 
 from cs336_alignment import custom_grader
 from cs336_alignment import data_utils
@@ -124,7 +125,7 @@ def _get_vllm_model_and_sampling_params(
         n=train_config.group_size,
         stop=train_config.sampling_stop,
         include_stop_str_in_output=True,
-        logprobs=1,
+        logprobs=None,
     )
     evaluation_sampling_params = vllm.SamplingParams(
         temperature=train_config.sampling_temperature,
@@ -270,7 +271,6 @@ def _get_grpo_train_one_epoch_data_for_gsm8k(
         repeated_model_input_prompts,
         model_responses,
         repeated_ground_truth_answers,
-        old_log_probs,
     ) = grpo_utils.sample_grpo_rollouts(
         model=vllm_old_model,
         sampling_params=training_sampling_params,
@@ -298,7 +298,6 @@ def _get_grpo_train_one_epoch_data_for_gsm8k(
     )
     return (
         tokenized_input_dict,
-        old_log_probs,
         raw_rewards,
         rewards_metadata,
         group_normalized_rewards,
@@ -319,14 +318,12 @@ def _get_grpo_train_one_epoch_data_for_countdown(
         nums_list=train_ds_batch["nums"],
         target_list=train_ds_batch["target"],
     )
-    repeated_model_input_prompts, model_responses, _, old_log_probs = (
-        grpo_utils.sample_grpo_rollouts(
-            model=vllm_old_model,
-            sampling_params=training_sampling_params,
-            questions=input_prompts,
-            ground_truth_answers=train_ds_batch["target"],
-            prompt_fn=lambda questions: questions,
-        )
+    repeated_model_input_prompts, model_responses, _ = grpo_utils.sample_grpo_rollouts(
+        model=vllm_old_model,
+        sampling_params=training_sampling_params,
+        questions=input_prompts,
+        ground_truth_answers=train_ds_batch["target"],
+        prompt_fn=lambda questions: questions,
     )
     tokenized_input_dict = sft_helpers.tokenize_prompt_and_output(
         prompt_strs=repeated_model_input_prompts,
@@ -351,11 +348,48 @@ def _get_grpo_train_one_epoch_data_for_countdown(
     )
     return (
         tokenized_input_dict,
-        old_log_probs,
         raw_rewards,
         rewards_metadata,
         group_normalized_rewards,
     )
+
+
+def _get_old_policy_log_probs(
+    policy_model: transformers.PreTrainedModel,
+    tokenized_input_dict: dict[str, Int[torch.Tensor, "rollout_batch_size seq_len"]],
+    train_config: grpo_train_config.GrpoTrainConfig,
+) -> Float[torch.Tensor, "rollout_batch_size seq_len"]:
+    """Gets the old policy log probabilities."""
+    old_log_probs = []
+    for i in range(train_config.n_policy_model_inference_batches_per_rollout_batch):
+        microbatch_input_ids = (
+            tokenized_input_dict["input_ids"][
+                i
+                * train_config.policy_model_inference_batch_size : (i + 1)
+                * train_config.policy_model_inference_batch_size
+            ]
+            .pin_memory()
+            .to("cuda:0", non_blocking=True)
+        )
+        microbatch_labels = (
+            tokenized_input_dict["labels"][
+                i
+                * train_config.policy_model_inference_batch_size : (i + 1)
+                * train_config.policy_model_inference_batch_size
+            ]
+            .pin_memory()
+            .to("cuda:0", non_blocking=True)
+        )
+        # Move to CPU to save memory.
+        with torch.no_grad():
+            old_log_probs_dict = sft_helpers.get_response_log_probs(
+                model=policy_model,
+                input_ids=microbatch_input_ids,
+                labels=microbatch_labels,
+                return_token_entropy=False,
+            )
+            old_log_probs.append(old_log_probs_dict["log_probs"].to("cpu"))
+    return torch.cat(old_log_probs, dim=0)
 
 
 def main(argv):
@@ -416,7 +450,6 @@ def main(argv):
         if _task_name.value == "gsm8k":
             (
                 tokenized_input_dict,
-                old_log_probs,
                 raw_rewards,
                 rewards_metadata,
                 group_normalized_rewards,
@@ -431,7 +464,6 @@ def main(argv):
         elif _task_name.value == "countdown":
             (
                 tokenized_input_dict,
-                old_log_probs,
                 raw_rewards,
                 rewards_metadata,
                 group_normalized_rewards,
@@ -445,6 +477,11 @@ def main(argv):
             )
         else:
             raise ValueError(f"Invalid task name: {_task_name.value}")
+        old_log_probs = _get_old_policy_log_probs(
+            policy_model=policy_model,
+            tokenized_input_dict=tokenized_input_dict,
+            train_config=train_config,
+        )
         for epoch in range(train_config.epochs_per_rollout_batch):
             global_update_count = grpo_utils.grpo_train_one_epoch(
                 policy_model=policy_model,
