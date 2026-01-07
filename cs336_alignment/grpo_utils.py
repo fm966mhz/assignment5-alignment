@@ -10,7 +10,7 @@ import transformers
 import vllm
 
 from absl import logging
-from jaxtyping import Float, Int
+from jaxtyping import Bool, Float, Int
 
 from cs336_alignment import custom_grader
 from cs336_alignment import data_utils
@@ -215,14 +215,28 @@ def compute_grpo_clip_loss(
         dict[str, Any]: metadata for the GRPO-Clip loss
             "is_token_clipped": torch.Tensor of shape (rollout_batch_size, sequence_length):
                 whether the token is clipped.
+            "approx_kl_divergence": torch.Tensor of shape (rollout_batch_size, sequence_length):
+                the approximate KL divergence between the policy and the old policy.
     """
-    rho = torch.exp(policy_log_probs - old_log_probs)
+    log_ratio = policy_log_probs - old_log_probs
+    rho = torch.exp(log_ratio)
     first_term = advantages * rho
     second_term = advantages * torch.clip(rho, min=1 - cliprange, max=1 + cliprange)
     grpo_per_token_clipped_loss = -torch.minimum(first_term, second_term)
     with torch.no_grad():
-        is_token_clipped = second_term < first_term
-    return (grpo_per_token_clipped_loss, {"is_token_clipped": is_token_clipped})
+        is_token_clipped: Bool[torch.Tensor, "rollout_batch_size seq_len"] = (
+            second_term < first_term
+        )
+        approx_kl_divergence: Float[torch.Tensor, "rollout_batch_size seq_len"] = (
+            rho - 1 - log_ratio
+        )
+    return (
+        grpo_per_token_clipped_loss,
+        {
+            "is_token_clipped": is_token_clipped,
+            "approx_kl_divergence": approx_kl_divergence,
+        },
+    )
 
 
 def compute_policy_gradient_loss(
@@ -507,6 +521,12 @@ def run_evaluation(
         )
     else:
         raise ValueError(f"Invalid task name: {task_name}")
+    logging.info(
+        f"Evaluation score: {eval_result.score} at GRPO step "
+        f"{grpo_step + 1}/{train_config.n_grpo_steps}, "
+        f"epoch {epoch + 1}/{train_config.epochs_per_rollout_batch}, "
+        f"microbatch {microbatch_idx + 1}/{train_config.n_microbatches_per_rollout_batch}"
+    )
     wandb_run.log(
         {
             "eval/reward": eval_result.score,
@@ -563,14 +583,13 @@ def grpo_train_one_epoch(
     grpo_step: int,
     epoch: int,
     global_update_count: int,
-) -> int:
+) -> tuple[int, bool]:
     """Train the policy model for one epoch.
 
     Returns:
         int: The global update count.
+        bool: whether to early stop the GRPO step.
     """
-    # Whether the last update has been evaluated and hence no need to evaluate again.
-    last_update_evaluated = True
     for microbatch_idx in tqdm.tqdm(
         range(train_config.n_microbatches_per_rollout_batch),
         desc=(
@@ -642,7 +661,6 @@ def grpo_train_one_epoch(
             old_log_probs=microbatch_old_log_probs,
             cliprange=train_config.cliprange,
         )
-
         if microbatch_idx % train_config.log_training_metrics_every_n_microbatches == 0:
             gradient_norm_before_clipping = torch.nn.utils.clip_grad_norm_(
                 parameters=policy_model.parameters(),
@@ -670,15 +688,25 @@ def grpo_train_one_epoch(
             }
             del gradient_norm_before_clipping
             if train_config.loss_type == "grpo_clip":
-                log_dict["train/clip_fraction"] = (
-                    masked_mean(
-                        tensor=metadata["is_token_clipped"],
-                        mask=microbatch_response_mask,
+                with torch.no_grad():
+                    log_dict["train/clip_fraction"] = (
+                        masked_mean(
+                            tensor=metadata["is_token_clipped"],
+                            mask=microbatch_response_mask,
+                        )
+                        .detach()
+                        .item()
                     )
-                    .detach()
-                    .item()
-                )
+                    log_dict["train/approx_kl_divergence"] = (
+                        masked_mean(
+                            tensor=metadata["approx_kl_divergence"],
+                            mask=microbatch_response_mask,
+                        )
+                        .detach()
+                        .item()
+                    )
             wandb_run.log(log_dict)
+            del log_dict
 
         if (microbatch_idx + 1) % train_config.gradient_accumulation_steps == 0:
             torch.nn.utils.clip_grad_norm_(
@@ -688,7 +716,55 @@ def grpo_train_one_epoch(
             optimizer.step()
             optimizer.zero_grad()
             global_update_count += 1
-            last_update_evaluated = False
+            if global_update_count % train_config.validation_every_n_updates == 0:
+                run_evaluation(
+                    vllm_old_model=vllm_old_model,
+                    evaluation_sampling_params=evaluation_sampling_params,
+                    policy_model=policy_model,
+                    train_config=train_config,
+                    prompt_template=prompt_template,
+                    eval_ds=eval_ds,
+                    task_name=task_name,
+                    grpo_step=grpo_step,
+                    epoch=epoch,
+                    microbatch_idx=microbatch_idx,
+                    wandb_run=wandb_run,
+                )
+        if train_config.loss_type == "grpo_clip":
+            with torch.no_grad():
+                microbatch_average_kl_divergence = (
+                    masked_mean(
+                        tensor=metadata["approx_kl_divergence"],
+                        mask=microbatch_response_mask,
+                    )
+                    .detach()
+                    .item()
+                )
+            if (
+                microbatch_average_kl_divergence
+                > train_config.early_stop_kl_divergence_threshold
+            ):
+                logging.info(
+                    f"Early stopping because microbatch KL divergence "
+                    f"{microbatch_average_kl_divergence} is greater than threshold "
+                    f"{train_config.early_stop_kl_divergence_threshold}"
+                )
+                del (
+                    microbatch_input_ids,
+                    microbatch_labels,
+                    microbatch_response_mask,
+                    microbatch_old_log_probs,
+                    microbatch_raw_rewards,
+                    microbatch_format_rewards,
+                    microbatch_answer_rewards,
+                    microbatch_advantages,
+                    policy_log_probs_dict,
+                    loss,
+                    metadata,
+                    microbatch_average_kl_divergence,
+                )
+                optimizer.zero_grad()
+                return global_update_count, True
         del (
             microbatch_input_ids,
             microbatch_labels,
@@ -702,22 +778,4 @@ def grpo_train_one_epoch(
             loss,
             metadata,
         )
-        if (
-            not last_update_evaluated
-            and global_update_count % train_config.validation_every_n_updates == 0
-        ):
-            run_evaluation(
-                vllm_old_model=vllm_old_model,
-                evaluation_sampling_params=evaluation_sampling_params,
-                policy_model=policy_model,
-                train_config=train_config,
-                prompt_template=prompt_template,
-                eval_ds=eval_ds,
-                task_name=task_name,
-                grpo_step=grpo_step,
-                epoch=epoch,
-                microbatch_idx=microbatch_idx,
-                wandb_run=wandb_run,
-            )
-            last_update_evaluated = True
-    return global_update_count
+    return global_update_count, False

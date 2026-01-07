@@ -7,6 +7,7 @@ from typing import Any
 import datasets
 import numpy as np
 import torch
+import tqdm
 import transformers
 import vllm
 import wandb
@@ -83,6 +84,8 @@ def _set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _check_at_least_two_gpus() -> None:
@@ -126,6 +129,7 @@ def _get_vllm_model_and_sampling_params(
         stop=train_config.sampling_stop,
         include_stop_str_in_output=True,
         logprobs=None,
+        seed=_seed.value,
     )
     evaluation_sampling_params = vllm.SamplingParams(
         temperature=train_config.sampling_temperature,
@@ -136,6 +140,7 @@ def _get_vllm_model_and_sampling_params(
         stop=train_config.sampling_stop,
         include_stop_str_in_output=True,
         logprobs=None,
+        seed=_seed.value,
     )
     return vllm_model, training_sampling_params, evaluation_sampling_params
 
@@ -241,6 +246,8 @@ def _init_wandb_run(
             "validation_every_n_updates": config.validation_every_n_updates,
             "n_microbatches_per_rollout_batch": config.n_microbatches_per_rollout_batch,
             "microbatch_size": config.microbatch_size,
+            "log_training_metrics_every_n_microbatches": config.log_training_metrics_every_n_microbatches,
+            "validation_every_n_updates": config.validation_every_n_updates,
         },
     )
 
@@ -361,7 +368,10 @@ def _get_old_policy_log_probs(
 ) -> Float[torch.Tensor, "rollout_batch_size seq_len"]:
     """Gets the old policy log probabilities."""
     old_log_probs = []
-    for i in range(train_config.n_policy_model_inference_batches_per_rollout_batch):
+    for i in tqdm.tqdm(
+        range(train_config.n_policy_model_inference_batches_per_rollout_batch),
+        desc="Getting old policy log probabilities",
+    ):
         microbatch_input_ids = (
             tokenized_input_dict["input_ids"][
                 i
@@ -483,7 +493,7 @@ def main(argv):
             train_config=train_config,
         )
         for epoch in range(train_config.epochs_per_rollout_batch):
-            global_update_count = grpo_utils.grpo_train_one_epoch(
+            global_update_count, early_stop = grpo_utils.grpo_train_one_epoch(
                 policy_model=policy_model,
                 optimizer=optimizer,
                 task_name=_task_name.value,
@@ -505,19 +515,30 @@ def main(argv):
                 epoch=epoch,
                 global_update_count=global_update_count,
             )
-        if grpo_step % _checkpoint_every_n_grpo_steps.value == 0:
+            if early_stop:
+                logging.info(f"Early stopping GRPO step {grpo_step}...")
+                break
+        del (
+            tokenized_input_dict,
+            raw_rewards,
+            rewards_metadata,
+            group_normalized_rewards,
+            old_log_probs,
+        )
+        if (grpo_step + 1) % _checkpoint_every_n_grpo_steps.value == 0:
             logging.info(
-                f"Saving policy model and tokenizer for GRPO step {grpo_step}..."
+                f"Saving policy model and tokenizer for GRPO step {grpo_step + 1}..."
             )
             checkpoint_dir_name = pretrained_model_checkpoint_manager.save_checkpoint(
                 model=policy_model,
                 tokenizer=tokenizer,
-                step=grpo_step,
+                step=grpo_step + 1,
             )
             logging.info(
                 f"Policy model and tokenizer saved successfully to "
                 f"{os.path.join(_output_dir.value, checkpoint_dir_name)}."
             )
+    wandb_run.finish()
 
 
 if __name__ == "__main__":

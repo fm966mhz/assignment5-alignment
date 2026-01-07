@@ -123,6 +123,11 @@ _cliprange = flags.DEFINE_float(
     0.2,
     "The clip range for the ratio.",
 )
+_early_stop_kl_divergence_threshold = flags.DEFINE_float(
+    "early_stop_kl_divergence_threshold",
+    float("inf"),
+    "The KL divergence threshold to use for early stopping.",
+)
 _validation_every_n_updates = flags.DEFINE_integer(
     "validation_every_n_updates",
     5,
@@ -163,6 +168,7 @@ class GrpoTrainConfig:  # pylint: disable=too-many-instance-attributes
     adamw_beta_2: float
     gradient_clip: float
     cliprange: float
+    early_stop_kl_divergence_threshold: float
     validation_every_n_updates: int
     log_training_metrics_every_n_microbatches: int
     n_microbatches_per_rollout_batch: int
@@ -224,6 +230,7 @@ def get_grpo_train_config() -> GrpoTrainConfig:
         adamw_beta_2=_adamw_beta_2.value,
         gradient_clip=_gradient_clip.value,
         cliprange=_cliprange.value,
+        early_stop_kl_divergence_threshold=_early_stop_kl_divergence_threshold.value,
         validation_every_n_updates=_validation_every_n_updates.value,
         log_training_metrics_every_n_microbatches=_log_training_metrics_every_n_microbatches.value,
         n_microbatches_per_rollout_batch=n_microbatches_per_rollout_batch,

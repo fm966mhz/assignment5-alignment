@@ -2,6 +2,8 @@
 
 import regex as re
 
+from absl import logging
+
 from cs336_alignment import drgrpo_grader
 
 
@@ -125,7 +127,11 @@ def validate_countdown_answer(output: str, nums: list[int], target: int) -> bool
     nums_sorted = sorted(nums)
     if numbers_used != nums_sorted:
         return False
-    expr_result = eval(expr)  # pylint: disable=eval-used
+    try:
+        expr_result = eval(expr)  # pylint: disable=eval-used
+    except Exception:
+        logging.warning(f"Error evaluating expression: {expr}")
+        return False
     return expr_result == target
 
 
