@@ -14,11 +14,14 @@ WANDB_ENTITY="fm966hz"
 WANDB_PROJECT="cs336-assignment5-alignment"
 WANDB_RUN_NAME="$EXP_NAME"
 SEED=42
-N_GRPO_STEPS=200
+N_GRPO_STEPS=300
 # For the GRPO-clipo loss, also tried 8e-5. Gradient exploded.
 # For long training runs, stable training is more important than faster initial training. This can
 # be monitored through the gradient norm.
 LEARNING_RATE=2e-5
+MIN_LEARNING_RATE=1e-6
+LR_WARMUP_GRPO_STEPS=15
+LR_COSINE_CYCLE_GRPO_STEPS=50
 ADVANTAGE_EPSILON=1e-6
 # Rollout batch size 512 consistently worse than 256.
 ROLLOUT_BATCH_SIZE=256
@@ -39,17 +42,17 @@ EPOCHS_PER_ROLLOUT_BATCH=2
 TRAIN_BATCH_SIZE=128    
 POLICY_MODEL_INFERENCE_BATCH_SIZE=16
 EVALUATION_SAMPLE_SIZE=1024
-GRADIENT_ACCUMULATION_STEPS=64
+GRADIENT_ACCUMULATION_STEPS=32
 GPU_MEMORY_UTILIZATION=0.85
 LOSS_TYPE="grpo_clip"
-USE_LENGTH_NORMALIZATION=True
-USE_STD_NORMALIZATION=True
-ADAMW_WEIGHT_DECAY=0
+USE_LENGTH_NORMALIZATION=False
+USE_STD_NORMALIZATION=False
+ADAMW_WEIGHT_DECAY=0.001
 ADAMW_BETA_1=0.9
 ADAMW_BETA_2=0.95
 GRADIENT_CLIP=1.0
 CLIPRANGE=0.2
-EARLY_STOP_KL_DIVERGENCE_THRESHOLD=0.2
+# EARLY_STOP_KL_DIVERGENCE_THRESHOLD=1.0
 VALIDATION_EVERY_N_UPDATES=10
 LOG_TRAINING_METRICS_EVERY_N_MICROBATCHES=16
 CHECKPOINT_EVERY_N_GRPO_STEPS=5
@@ -67,6 +70,9 @@ uv run cs336_alignment/grpo_train_main.py \
     --seed="$SEED" \
     --n_grpo_steps="$N_GRPO_STEPS" \
     --learning_rate="$LEARNING_RATE" \
+    --min_learning_rate="$MIN_LEARNING_RATE" \
+    --lr_warmup_grpo_steps="$LR_WARMUP_GRPO_STEPS" \
+    --lr_cosine_cycle_grpo_steps="$LR_COSINE_CYCLE_GRPO_STEPS" \
     --advantage_epsilon="$ADVANTAGE_EPSILON" \
     --rollout_batch_size="$ROLLOUT_BATCH_SIZE" \
     --group_size="$GROUP_SIZE" \
@@ -88,7 +94,7 @@ uv run cs336_alignment/grpo_train_main.py \
     --adamw_beta_2="$ADAMW_BETA_2" \
     --gradient_clip="$GRADIENT_CLIP" \
     --cliprange="$CLIPRANGE" \
-    --early_stop_kl_divergence_threshold="$EARLY_STOP_KL_DIVERGENCE_THRESHOLD" \
+    # --early_stop_kl_divergence_threshold="$EARLY_STOP_KL_DIVERGENCE_THRESHOLD" \
     --validation_every_n_updates="$VALIDATION_EVERY_N_UPDATES" \
     --log_training_metrics_every_n_microbatches="$LOG_TRAINING_METRICS_EVERY_N_MICROBATCHES" \
     --checkpoint_every_n_grpo_steps="$CHECKPOINT_EVERY_N_GRPO_STEPS" \

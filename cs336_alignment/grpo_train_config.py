@@ -15,6 +15,21 @@ _learning_rate = flags.DEFINE_float(
     1e-5,
     "The learning rate to use for training.",
 )
+_min_learning_rate = flags.DEFINE_float(
+    "min_learning_rate",
+    1e-6,
+    "The minimum learning rate to use for training.",
+)
+_lr_warmup_grpo_steps = flags.DEFINE_integer(
+    "lr_warmup_grpo_steps",
+    15,
+    "The ratio of learning rate warmup iterations to the total number of iterations.",
+)
+_lr_cosine_cycle_grpo_steps = flags.DEFINE_integer(
+    "lr_cosine_cycle_grpo_steps",
+    50,
+    "The number of GRPO steps to use for the cosine cycle of the learning rate scheduler.",
+)
 _advantage_epsilon = flags.DEFINE_float(
     "advantage_epsilon",
     1e-6,
@@ -146,6 +161,9 @@ class GrpoTrainConfig:  # pylint: disable=too-many-instance-attributes
 
     n_grpo_steps: int
     learning_rate: float
+    min_learning_rate: float
+    lr_warmup_grpo_steps: int
+    lr_cosine_cycle_grpo_steps: int
     advantage_epsilon: float
     rollout_batch_size: int
     group_size: int
@@ -205,6 +223,9 @@ def get_grpo_train_config() -> GrpoTrainConfig:
     return GrpoTrainConfig(
         n_grpo_steps=n_grpo_steps.value,
         learning_rate=_learning_rate.value,
+        min_learning_rate=_min_learning_rate.value,
+        lr_warmup_grpo_steps=_lr_warmup_grpo_steps.value,
+        lr_cosine_cycle_grpo_steps=_lr_cosine_cycle_grpo_steps.value,
         advantage_epsilon=_advantage_epsilon.value,
         rollout_batch_size=_rollout_batch_size.value,
         group_size=_group_size.value,

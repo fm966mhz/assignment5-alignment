@@ -565,6 +565,7 @@ def grpo_train_one_epoch(
     *,
     policy_model: transformers.PreTrainedModel,
     optimizer: torch.optim.Optimizer,
+    lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
     task_name: str,
     all_input_ids: Int[torch.Tensor, "rollout_batch_size seq_len"],
     all_labels: Int[torch.Tensor, "rollout_batch_size seq_len"],
@@ -714,6 +715,7 @@ def grpo_train_one_epoch(
                 max_norm=train_config.gradient_clip,
             )
             optimizer.step()
+            lr_scheduler.step()
             optimizer.zero_grad()
             global_update_count += 1
             if global_update_count % train_config.validation_every_n_updates == 0:
@@ -730,7 +732,10 @@ def grpo_train_one_epoch(
                     microbatch_idx=microbatch_idx,
                     wandb_run=wandb_run,
                 )
-        if train_config.loss_type == "grpo_clip":
+        if (
+            train_config.loss_type == "grpo_clip"
+            and train_config.early_stop_kl_divergence_threshold < float("inf")
+        ):
             with torch.no_grad():
                 microbatch_average_kl_divergence = (
                     masked_mean(

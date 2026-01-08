@@ -192,17 +192,35 @@ def _get_train_eval_datasets(
         raise ValueError(f"Invalid task name: {task_name}")
 
 
-def _get_optimizer(
+def _get_optimizer_and_scheduler(
     policy_model: transformers.PreTrainedModel,
     train_config: grpo_train_config.GrpoTrainConfig,
-) -> torch.optim.Optimizer:
-    """Gets the optimizer for the policy model."""
-    return torch.optim.AdamW(
+) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler]:
+    """Gets the optimizer and learning rate scheduler for the policy model."""
+    optimizer = torch.optim.AdamW(
         policy_model.parameters(),
         lr=train_config.learning_rate,
         weight_decay=train_config.adamw_weight_decay,
         betas=(train_config.adamw_beta_1, train_config.adamw_beta_2),
     )
+    warmup_iters = (
+        train_config.lr_warmup_grpo_steps
+        * train_config.epochs_per_rollout_batch
+        * (train_config.rollout_batch_size // train_config.train_batch_size)
+    )
+    cosine_cycle_iters = (
+        train_config.lr_cosine_cycle_grpo_steps
+        * train_config.epochs_per_rollout_batch
+        * (train_config.rollout_batch_size // train_config.train_batch_size)
+    )
+    lr_scheduler = sft_helpers.CosineLrScheduler(
+        optimizer=optimizer,
+        max_learning_rate=train_config.learning_rate,
+        min_learning_rate=train_config.min_learning_rate,
+        warmup_iters=warmup_iters,
+        cosine_cycle_iters=cosine_cycle_iters,
+    )
+    return optimizer, lr_scheduler
 
 
 def _init_wandb_run(
@@ -432,7 +450,7 @@ def main(argv):
         config=train_config,
     )
     logging.info(f"GRPO training configuration: {train_config}")
-    optimizer = _get_optimizer(
+    optimizer, lr_scheduler = _get_optimizer_and_scheduler(
         policy_model=policy_model,
         train_config=train_config,
     )
@@ -496,6 +514,7 @@ def main(argv):
             global_update_count, early_stop = grpo_utils.grpo_train_one_epoch(
                 policy_model=policy_model,
                 optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
                 task_name=_task_name.value,
                 all_input_ids=tokenized_input_dict["input_ids"],
                 all_labels=tokenized_input_dict["labels"],
